@@ -34,7 +34,12 @@ adapters:
   clone_repo:
     name: clone_repo
     type: script
-    cmd: "git clone --depth 1 {{ repo_url }} /tmp/argus-{{ run_id }} 2>&1 && echo 'CLONE_OK'"
+    cmd: >-
+      if [ -d "{{ repo_url }}" ]; then
+        cp -r "{{ repo_url }}" "/tmp/argus-{{ run_id }}" 2>&1 && echo 'CLONE_OK (local copy)';
+      else
+        git clone --depth 1 "{{ repo_url }}" "/tmp/argus-{{ run_id }}" 2>&1 && echo 'CLONE_OK';
+      fi
 
   gather_code:
     name: gather_code

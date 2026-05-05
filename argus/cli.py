@@ -28,26 +28,14 @@ def scan(repo_url: str, report_dir: str):
 
 
 async def _run_scan(repo_url: str, report_dir: Path) -> None:
-    inputs: dict = {"repo_url": repo_url}
-
-    # For local paths, skip the clone step by injecting a pre-built clone_repo result
-    if repo_url.startswith("/") or repo_url.startswith("."):
-        resolved = str(Path(repo_url).resolve())
-        inputs["clone_repo"] = {
-            "stdout": f"CLONE_OK (local path: {resolved})",
-            "stderr": "",
-            "exit_code": 0,
-        }
-        inputs["repo_local_path"] = resolved
-
     click.echo(f"[argus] Loading workflow: {WORKFLOW}")
-    spec = load_spec(WORKFLOW, vars=inputs)
+    spec = load_spec(WORKFLOW)
     harness = Harness(spec=spec)
 
     click.echo(f"[argus] Scanning: {repo_url}")
 
     try:
-        results = await harness.run(inputs)
+        results = await harness.run({"repo_url": repo_url})
     except Exception as exc:
         click.echo(f"[argus] ERROR: {exc}", err=True)
         sys.exit(1)
@@ -59,7 +47,7 @@ async def _run_scan(repo_url: str, report_dir: Path) -> None:
         click.echo("[argus] WARNING: no report content in generate_report stage output", err=True)
         sys.exit(1)
 
-    run_id = harness._run_id
-    report_path = report_dir / f"argus-report-{run_id}.md"
+    report_dir.mkdir(parents=True, exist_ok=True)
+    report_path = report_dir / f"argus-report-{harness._run_id}.md"
     report_path.write_text(markdown, encoding="utf-8")
     click.echo(f"[argus] Report written to: {report_path}")
