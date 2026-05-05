@@ -1,0 +1,8 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+/tmp/argus-*
+argus-report-*.md
+*.egg-info/
+.pytest_cache/
