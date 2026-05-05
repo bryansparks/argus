@@ -53,7 +53,7 @@ adapters:
     cmd: >-
       cd /tmp/argus-{{ run_id }} &&
       pip-audit --format json -r requirements.txt 2>/dev/null ||
-      echo '{"dependencies":[]}'
+      echo '[]'
 
   secret_scan:
     name: secret_scan

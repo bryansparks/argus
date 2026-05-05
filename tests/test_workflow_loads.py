@@ -13,6 +13,11 @@ def test_workflow_loads_without_error():
     assert spec.name == "repo-security-scan"
 
 
+def test_workflow_renders_with_vars():
+    spec = load_spec(WORKFLOW, vars={"run_id": "test123", "repo_url": "https://github.com/test/test"})
+    assert spec.name == "repo-security-scan"
+
+
 def test_workflow_has_required_stages():
     spec = load_spec(WORKFLOW)
     stage_ids = {s.id for s in spec.stages}
@@ -27,7 +32,15 @@ def test_workflow_has_required_stages():
 
 def test_workflow_has_safety_rules():
     spec = load_spec(WORKFLOW)
-    assert len(spec.safety_rules) >= 2
+    assert len(spec.safety_rules) >= 3
+
+
+def test_stage_depends_on_resolve():
+    spec = load_spec(WORKFLOW)
+    stage_ids = {s.id for s in spec.stages}
+    for stage in spec.stages:
+        for dep in stage.depends_on:
+            assert dep in stage_ids, f"Stage '{stage.id}' depends_on unknown stage '{dep}'"
 
 
 def test_adapter_stages_have_commands():
