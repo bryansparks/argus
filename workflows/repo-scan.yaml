@@ -1,0 +1,289 @@
+name: repo-security-scan
+version: "1.0"
+description: "Scan a Python GitHub repository for security vulnerabilities and produce a prioritized hardening report."
+
+model_tiers:
+  frontier:
+    provider: anthropic
+    model: claude-opus-4-7
+
+safety_rules:
+  - tool: shell
+    condition:
+      field: cmd
+      op: matches_regex
+      value: "git\\s+(push|commit|merge|rebase)"
+    action: block
+    message: "Git write operations are not permitted in scan mode"
+  - tool: shell
+    condition:
+      field: cmd
+      op: matches_regex
+      value: "rm\\s+-rf"
+    action: block
+    message: "Destructive rm -rf not permitted"
+  - tool: shell
+    condition:
+      field: cmd
+      op: contains
+      value: "gh issue"
+    action: block
+    message: "Issue creation must be done outside the scan workflow"
+
+adapters:
+  clone_repo:
+    name: clone_repo
+    type: script
+    cmd: "git clone --depth 1 {{ repo_url }} /tmp/argus-{{ run_id }} 2>&1 && echo 'CLONE_OK'"
+
+  gather_code:
+    name: gather_code
+    type: script
+    cmd: >-
+      echo '=== PYTHON_FILES ===';
+      find /tmp/argus-{{ run_id }} -name '*.py' ! -path '*/.git/*' ! -path '*/venv/*' ! -path '*/.venv/*' | sort | head -20 | while read f; do echo "--- $f ---"; head -150 "$f"; done;
+      echo '=== REQUIREMENTS ===';
+      find /tmp/argus-{{ run_id }} -maxdepth 2 -name 'requirements*.txt' | head -3 | xargs cat 2>/dev/null || echo 'none';
+      echo '=== CI_CONFIG ===';
+      find /tmp/argus-{{ run_id }}/.github/workflows -name '*.yml' -o -name '*.yaml' 2>/dev/null | xargs cat 2>/dev/null || echo 'none'
+
+  dependency_scan:
+    name: dependency_scan
+    type: script
+    cmd: >-
+      cd /tmp/argus-{{ run_id }} &&
+      pip-audit --format json -r requirements.txt 2>/dev/null ||
+      echo '{"dependencies":[]}'
+
+  secret_scan:
+    name: secret_scan
+    type: script
+    cmd: >-
+      gitleaks detect
+      --source /tmp/argus-{{ run_id }}
+      --report-format json
+      --report-path /tmp/argus-{{ run_id }}-leaks.json
+      --no-git 2>/dev/null;
+      cat /tmp/argus-{{ run_id }}-leaks.json 2>/dev/null || echo '[]'
+
+stages:
+  - id: clone_repo
+    adapter: clone_repo
+    on_fail:
+      loop:
+        stage: clone_repo
+        max: 2
+
+  - id: gather_code
+    adapter: gather_code
+    depends_on: [clone_repo]
+
+  - id: dependency_scan
+    adapter: dependency_scan
+    depends_on: [clone_repo]
+
+  - id: secret_scan
+    adapter: secret_scan
+    depends_on: [clone_repo]
+
+  - id: code_analysis
+    depends_on: [gather_code]
+    role:
+      name: code_analyzer
+      type: worker
+      model_tier: frontier
+      description: |
+        You are a security engineer reviewing Python source code for vulnerabilities.
+
+        Analyze the following source code and identify security issues.
+        Focus on: SQL injection, command injection, hardcoded secrets, weak cryptography,
+        insecure deserialization, path traversal, XSS, insecure direct object references,
+        and missing authentication/authorization checks.
+
+        Source code:
+        {{ gather_code.stdout }}
+
+        For each vulnerability found, provide the file name, approximate line number,
+        severity (critical/high/medium/low), vulnerability type, a clear description,
+        and a specific recommendation to fix it.
+    output_mode: guided_json
+    output_schema:
+      type: object
+      required: [vulnerabilities, files_reviewed]
+      properties:
+        vulnerabilities:
+          type: array
+          items:
+            type: object
+            required: [file, line_approx, severity, type, description, recommendation]
+            properties:
+              file:        { type: string }
+              line_approx: { type: integer }
+              severity:    { type: string, enum: [critical, high, medium, low] }
+              type:        { type: string }
+              description: { type: string }
+              recommendation: { type: string }
+        files_reviewed: { type: integer }
+    on_fail:
+      loop:
+        stage: code_analysis
+        max: 2
+
+  - id: synthesize_findings
+    depends_on: [code_analysis, dependency_scan, secret_scan]
+    role:
+      name: synthesizer
+      type: orchestrator
+      model_tier: frontier
+      description: |
+        You are combining security findings from three sources into a unified list.
+
+        SOURCE 1 -- LLM code analysis findings (JSON):
+        {{ code_analysis }}
+
+        SOURCE 2 -- pip-audit dependency vulnerability scan (JSON stdout):
+        {{ dependency_scan.stdout }}
+
+        SOURCE 3 -- gitleaks secret scan (JSON stdout):
+        {{ secret_scan.stdout }}
+
+        Combine all findings into a single deduplicated list. Assign each finding a unique ID
+        (F001, F002, ...). Classify the source as: code_analysis | dependency | secrets | ci.
+        Do not invent findings not present in the sources above.
+    output_mode: guided_json
+    output_schema:
+      type: object
+      required: [findings, total_count, by_severity]
+      properties:
+        findings:
+          type: array
+          items:
+            type: object
+            required: [id, source, severity, title, description, recommendation]
+            properties:
+              id:             { type: string }
+              source:         { type: string, enum: [code_analysis, dependency, secrets, ci] }
+              severity:       { type: string, enum: [critical, high, medium, low] }
+              title:          { type: string }
+              file:           { type: string }
+              line_approx:    { type: integer }
+              description:    { type: string }
+              recommendation: { type: string }
+        total_count: { type: integer }
+        by_severity:
+          type: object
+          properties:
+            critical: { type: integer }
+            high:     { type: integer }
+            medium:   { type: integer }
+            low:      { type: integer }
+
+  - id: prioritize_tasks
+    depends_on: [synthesize_findings]
+    role:
+      name: prioritizer
+      type: orchestrator
+      model_tier: frontier
+      description: |
+        You are a security engineer creating a prioritized remediation plan.
+
+        Findings to prioritize (JSON):
+        {{ synthesize_findings }}
+
+        Rank all findings by: (1) severity, (2) exploitability, (3) ease of fix.
+        Assign effort as low (< 1 hour), medium (1-4 hours), or high (> 4 hours).
+        The highest-priority item should be the one that is most critical AND easiest to fix.
+    output_mode: guided_json
+    output_schema:
+      type: object
+      required: [tasks]
+      properties:
+        tasks:
+          type: array
+          items:
+            type: object
+            required: [priority, finding_id, title, severity, effort, rationale]
+            properties:
+              priority:   { type: integer }
+              finding_id: { type: string }
+              title:      { type: string }
+              severity:   { type: string }
+              effort:     { type: string, enum: [low, medium, high] }
+              rationale:  { type: string }
+
+  - id: validate_findings
+    depends_on: [prioritize_tasks]
+    role:
+      name: validator
+      type: judge
+      model_tier: frontier
+      description: |
+        You are a senior security engineer performing a final review before this report is shown to a human.
+
+        Review the prioritized findings and check for:
+        - False positives (flag any finding that is clearly not a real vulnerability)
+        - Misclassified severity (flag anything that should be higher or lower)
+        - Priority ordering errors (flag if the order seems wrong)
+
+        Prioritized tasks (JSON):
+        {{ prioritize_tasks }}
+
+        Original findings (JSON):
+        {{ synthesize_findings }}
+
+        If there are no significant issues, set accept=true with confidence >= 0.8.
+        If false positives are found, list them by finding_id.
+    output_mode: guided_json
+    output_schema:
+      type: object
+      required: [accept, confidence, false_positive_ids, notes, feedback]
+      properties:
+        accept:             { type: boolean }
+        confidence:         { type: number }
+        false_positive_ids: { type: array, items: { type: string } }
+        notes:              { type: string }
+        feedback:           { type: string }
+    on_fail:
+      loop:
+        stage: validate_findings
+        max: 2
+
+  - id: human_approval
+    gate: human
+    depends_on: [validate_findings]
+
+  - id: generate_report
+    depends_on: [human_approval]
+    role:
+      name: reporter
+      type: worker
+      model_tier: frontier
+      description: |
+        Generate a well-formatted Markdown security report based on the validated findings.
+
+        Repository scanned: {{ repo_url }}
+        Run ID: {{ run_id }}
+
+        Validated findings (JSON):
+        {{ validate_findings }}
+
+        Prioritized tasks (JSON):
+        {{ prioritize_tasks }}
+
+        Synthesized findings (JSON):
+        {{ synthesize_findings }}
+
+        Structure the report as:
+        1. Executive Summary (3-5 sentences: what was scanned, how many issues found, top priority)
+        2. Findings by Severity (table: ID | Title | File | Severity | Source)
+        3. Prioritized Remediation Tasks (numbered list with effort estimates)
+        4. Detailed Findings (one subsection per finding: description + recommendation)
+        5. Scan Metadata (run_id, model used, timestamp)
+
+        Do not include false positives listed in validate_findings.false_positive_ids.
+    output_mode: guided_json
+    output_schema:
+      type: object
+      required: [report_markdown]
+      properties:
+        report_markdown: { type: string }
