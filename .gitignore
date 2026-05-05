@@ -6,3 +6,13 @@ __pycache__/
 argus-report-*.md
 *.egg-info/
 .pytest_cache/
+.DS_Store
+.vscode/
+.idea/
+dist/
+build/
+.coverage
+htmlcov/
+*.log
+.ruff_cache/
+.mypy_cache/
