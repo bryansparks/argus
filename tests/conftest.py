@@ -9,7 +9,7 @@ FIXTURE = Path(__file__).parent / "fixtures" / "vulnerable-app"
 WORKFLOW = Path(__file__).parent.parent / "workflows" / "repo-scan.yaml"
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def anyio_backend():
     return "asyncio"
 
