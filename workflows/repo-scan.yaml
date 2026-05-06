@@ -330,16 +330,18 @@ stages:
         - Repository: {{ repo_url }}
         - Stages: clone_repo, gather_code, dependency_scan, secret_scan, code_analysis, synthesize_findings, prioritize_tasks, validate_findings, generate_report
 
-        In addition to report_markdown, populate the `fixes` array with one entry per finding (excluding false positives). Each entry must have:
+        In addition to report_markdown, populate the `fixes` array with one entry per finding.
+        IMPORTANT: exclude any finding whose id appears in validate_findings.false_positive_ids from BOTH the Markdown report and the fixes array.
+        Each entry must have:
         - finding_id: the F00N id
         - file: path relative to repo root (e.g. "app.py" not "/tmp/argus-.../app.py")
-        - line_start and line_end: the line numbers of the vulnerable code
+        - line_start and line_end: the line numbers of the vulnerable code. Use 0 if the exact line cannot be determined.
         - title: short finding title
         - vulnerable_code: the exact vulnerable lines as a string
         - fixed_code: the exact replacement lines as a string
         - explanation: one sentence on what the fix does
 
-        Use the gather_code.stdout source to find the actual vulnerable lines. If exact lines are unavailable, use your best approximation from the code shown.
+        Use the gather_code.stdout source to find the actual vulnerable lines and their line numbers.
     output_mode: guided_json
     output_schema:
       type: object
@@ -355,8 +357,8 @@ stages:
             properties:
               finding_id:      { type: string }
               file:            { type: string }
-              line_start:      { type: integer }
-              line_end:        { type: integer }
+              line_start:      { type: integer, minimum: 0 }
+              line_end:        { type: integer, minimum: 0 }
               title:           { type: string }
               vulnerable_code: { type: string }
               fixed_code:      { type: string }
