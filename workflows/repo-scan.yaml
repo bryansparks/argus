@@ -264,7 +264,7 @@ stages:
       type: worker
       model_tier: frontier
       description: |
-        Generate a well-formatted Markdown security report based on the validated findings.
+        Generate a detailed, actionable Markdown security report. The report must be specific enough that a developer can make the exact fix without looking at the source code.
 
         Repository scanned: {{ repo_url }}
         Run ID: {{ run_id }}
@@ -278,17 +278,86 @@ stages:
         Synthesized findings (JSON):
         {{ synthesize_findings }}
 
-        Structure the report as:
-        1. Executive Summary (3-5 sentences: what was scanned, how many issues found, top priority)
-        2. Findings by Severity (table: ID | Title | File | Severity | Source)
-        3. Prioritized Remediation Tasks (numbered list with effort estimates)
-        4. Detailed Findings (one subsection per finding: description + recommendation)
-        5. Scan Metadata (run_id, model used, timestamp)
+        Code that was analyzed:
+        {{ gather_code.stdout }}
 
-        Do not include false positives listed in validate_findings.false_positive_ids.
+        Do not include any finding whose id appears in validate_findings.false_positive_ids.
+
+        Structure the Markdown report as follows:
+
+        ## Security Scan Report
+
+        ### Executive Summary
+        3-5 sentences: what repo was scanned, total findings by severity, the single highest-priority item to fix first and why.
+
+        ### Risk Summary
+
+        A table with columns: Priority | ID | Title | File | Lines | Severity | Source | Effort
+
+        ### Prioritized Remediation Tasks
+
+        Numbered list matching the prioritize_tasks order. For each:
+        - **[Priority N] Title** (Severity, Effort)
+          - File: `path/to/file.py`, lines X–Y
+          - One sentence on why this is the priority ranking.
+
+        ### Detailed Findings
+
+        One subsection per finding (in priority order). For each finding use this exact structure:
+
+        #### [ID] Title (Severity)
+
+        **File:** `relative/path/to/file.py`, line(s) N–M
+        **Source:** code_analysis | dependency | secrets | ci
+        **Concern:** Clear description of the vulnerability and what an attacker could do with it.
+
+        **Vulnerable code:**
+        ```python
+        # exact lines from the source showing the problem
+        ```
+
+        **Fix:**
+        ```python
+        # the corrected code that replaces the vulnerable lines above
+        ```
+
+        **Why this fix works:** One sentence explaining the security principle.
+
+        ---
+
+        ### Scan Metadata
+        - Run ID: {{ run_id }}
+        - Repository: {{ repo_url }}
+        - Stages: clone_repo, gather_code, dependency_scan, secret_scan, code_analysis, synthesize_findings, prioritize_tasks, validate_findings, generate_report
+
+        In addition to report_markdown, populate the `fixes` array with one entry per finding (excluding false positives). Each entry must have:
+        - finding_id: the F00N id
+        - file: path relative to repo root (e.g. "app.py" not "/tmp/argus-.../app.py")
+        - line_start and line_end: the line numbers of the vulnerable code
+        - title: short finding title
+        - vulnerable_code: the exact vulnerable lines as a string
+        - fixed_code: the exact replacement lines as a string
+        - explanation: one sentence on what the fix does
+
+        Use the gather_code.stdout source to find the actual vulnerable lines. If exact lines are unavailable, use your best approximation from the code shown.
     output_mode: guided_json
     output_schema:
       type: object
-      required: [report_markdown]
+      required: [report_markdown, fixes]
       properties:
-        report_markdown: { type: string }
+        report_markdown:
+          type: string
+        fixes:
+          type: array
+          items:
+            type: object
+            required: [finding_id, file, line_start, line_end, title, vulnerable_code, fixed_code, explanation]
+            properties:
+              finding_id:      { type: string }
+              file:            { type: string }
+              line_start:      { type: integer }
+              line_end:        { type: integer }
+              title:           { type: string }
+              vulnerable_code: { type: string }
+              fixed_code:      { type: string }
+              explanation:     { type: string }
