@@ -10,6 +10,7 @@ async def test_scan_completes(argus_scan_results):
     results = argus_scan_results
     assert "generate_report" in results, f"results keys: {list(results.keys())}"
     assert results["generate_report"]["report_markdown"], "generate_report.report_markdown is empty"
+    assert isinstance(results["generate_report"].get("fixes"), list), "generate_report.fixes must be a list"
 
 
 async def test_sql_injection_found(argus_scan_results):
