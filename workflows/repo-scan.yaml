@@ -1,11 +1,51 @@
 name: repo-security-scan
 version: "1.0"
-description: "Scan a Python GitHub repository for security vulnerabilities and produce a prioritized hardening report."
+description: "Scan a GitHub repository (Python, JS/TS, Java, Rust, Go) for security vulnerabilities and produce a prioritized hardening report."
 
 model_tiers:
+  tiny:
+    provider: openrouter
+    model: nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free
+    api_key_env: OPENROUTER_API_KEY
+    temperature: 0.2
+    max_tokens: 2048
+
+  small:
+    provider: ollama
+    model: gemma4:31b-cloud
+    api_base: https://api.ollama.com
+    api_key_env: OLLAMA_API_KEY
+
+  medium:
+    provider: ollama
+    model: gemma4:31b-cloud
+    api_base: https://api.ollama.com
+    api_key_env: OLLAMA_API_KEY
+
+  large:
+    provider: ollama
+    model: kimi-k2.6:cloud
+    api_base: https://api.ollama.com
+    api_key_env: OLLAMA_API_KEY
+
   frontier:
+    provider: ollama
+    model: glm-5.1:cloud
+    api_base: https://api.ollama.com
+    api_key_env: OLLAMA_API_KEY
+
+  synthesis:
     provider: anthropic
-    model: claude-opus-4-7
+    model: claude-3-5-haiku-20241022
+    api_key_env: ANTHROPIC_API_KEY
+    temperature: 0.2
+    max_tokens: 8192
+
+role_type_defaults:
+  worker: small
+  orchestrator: frontier
+  judge: large
+  researcher: large
 
 safety_rules:
   - tool: shell
@@ -30,46 +70,87 @@ safety_rules:
     action: block
     message: "Issue creation must be done outside the scan workflow"
 
+memory:
+  enabled: true
+  capture:
+    - stage: validate_findings
+      key: false_positive_ids
+      max_entries: 10
+  inject_as: _false_positive_memory
+
+tools:
+  - module: argus.tools.scanners
+
 adapters:
   clone_repo:
     name: clone_repo
     type: script
+    timeout: 180
     cmd: >-
       if [ -d "{{ repo_url }}" ]; then
         cp -r "{{ repo_url }}" "/tmp/argus-{{ run_id }}" 2>&1 && echo 'CLONE_OK (local copy)';
       else
-        git clone --depth 1 "{{ repo_url }}" "/tmp/argus-{{ run_id }}" 2>&1 && echo 'CLONE_OK';
+        git clone --depth 1 --single-branch "{{ repo_url }}" "/tmp/argus-{{ run_id }}" 2>&1 && echo 'CLONE_OK';
       fi
 
   gather_code:
     name: gather_code
     type: script
     cmd: >-
-      echo '=== PYTHON_FILES ===';
-      find /tmp/argus-{{ run_id }} -name '*.py' ! -path '*/.git/*' ! -path '*/venv/*' ! -path '*/.venv/*' | sort | head -20 | while read f; do echo "--- $f ---"; head -150 "$f"; done;
+      (echo '=== PYTHON_FILES ===';
+      find /tmp/argus-{{ run_id }} -name '*.py' ! -path '*/.git/*' ! -path '*/venv/*' ! -path '*/.venv/*' | sort | head -12 | while read f; do echo "--- $f ---"; head -150 "$f"; done;
+      echo '=== JS_TS_FILES ===';
+      find /tmp/argus-{{ run_id }} \( -name '*.ts' -o -name '*.tsx' -o -name '*.js' -o -name '*.jsx' \) ! -path '*/node_modules/*' ! -path '*/.git/*' ! -path '*/dist/*' ! -path '*/build/*' | sort | head -12 | while read f; do echo "--- $f ---"; head -150 "$f"; done;
+      echo '=== JAVA_FILES ===';
+      find /tmp/argus-{{ run_id }} -name '*.java' ! -path '*/.git/*' ! -path '*/target/*' ! -path '*/build/*' | sort | head -12 | while read f; do echo "--- $f ---"; head -150 "$f"; done;
+      echo '=== RUST_FILES ===';
+      find /tmp/argus-{{ run_id }} -name '*.rs' ! -path '*/.git/*' ! -path '*/target/*' | sort | head -12 | while read f; do echo "--- $f ---"; head -150 "$f"; done;
+      echo '=== GO_FILES ===';
+      find /tmp/argus-{{ run_id }} -name '*.go' ! -path '*/.git/*' ! -path '*/vendor/*' | sort | head -12 | while read f; do echo "--- $f ---"; head -150 "$f"; done;
+      echo '=== C_CPP_FILES ===';
+      find /tmp/argus-{{ run_id }} \( -name '*.c' -o -name '*.cpp' -o -name '*.cc' -o -name '*.cxx' -o -name '*.h' -o -name '*.hpp' \) ! -path '*/.git/*' ! -path '*/build/*' ! -path '*/target/*' | sort | head -8 | while read f; do echo "--- $f ---"; head -150 "$f"; done;
       echo '=== REQUIREMENTS ===';
-      find /tmp/argus-{{ run_id }} -maxdepth 2 -name 'requirements*.txt' | head -3 | xargs cat 2>/dev/null || echo 'none';
-      echo '=== CI_CONFIG ===';
-      find /tmp/argus-{{ run_id }}/.github/workflows -name '*.yml' -o -name '*.yaml' 2>/dev/null | xargs cat 2>/dev/null || echo 'none'
+      find /tmp/argus-{{ run_id }} -maxdepth 3 \( -name 'requirements*.txt' -o -name 'pyproject.toml' \) | head -4 | while read f; do echo "--- $f ---"; head -60 "$f"; done || echo 'none') | head -c 56000
 
-  dependency_scan:
-    name: dependency_scan
+  gather_config:
+    name: gather_config
     type: script
     cmd: >-
-      cd /tmp/argus-{{ run_id }} &&
-      pip-audit --format json -r requirements.txt 2>/dev/null ||
-      echo '[]'
+      (echo '=== DOCKER ===';
+      find /tmp/argus-{{ run_id }} -name 'Dockerfile*' ! -path '*/.git/*' | head -3 | while read f; do echo "--- $f ---"; head -80 "$f"; done || echo 'none';
+      echo '=== COMPOSE ===';
+      find /tmp/argus-{{ run_id }} -name 'docker-compose*.yml' ! -path '*/.git/*' | head -2 | while read f; do echo "--- $f ---"; head -100 "$f"; done || echo 'none';
+      echo '=== FRAMEWORK_SETTINGS ===';
+      find /tmp/argus-{{ run_id }} \( -name 'settings*.py' -o -name 'config*.py' -o -name 'app.py' -o -name 'main.py' \) ! -path '*/.git/*' ! -path '*/venv/*' | head -4 | while read f; do echo "--- $f ---"; head -100 "$f"; done || echo 'none';
+      echo '=== ENV_TEMPLATES ===';
+      find /tmp/argus-{{ run_id }} -name '.env*' ! -name '.env' ! -path '*/.git/*' | head -3 | while read f; do head -50 "$f"; done 2>/dev/null || echo 'none';
+      echo '=== CI_WORKFLOWS ===';
+      find /tmp/argus-{{ run_id }}/.github/workflows \( -name '*.yml' -o -name '*.yaml' \) 2>/dev/null | head -8 | while read f; do echo "--- $f ---"; head -100 "$f"; done || echo 'none';
+      echo '=== JAVA_BUILD ===';
+      find /tmp/argus-{{ run_id }} \( -name 'pom.xml' -o -name 'build.gradle' -o -name 'build.gradle.kts' -o -name 'settings.gradle' \) ! -path '*/.git/*' ! -path '*/target/*' | head -4 | while read f; do echo "--- $f ---"; head -100 "$f"; done || echo 'none';
+      echo '=== SPRING_CONFIG ===';
+      find /tmp/argus-{{ run_id }} \( -name 'application.properties' -o -name 'application.yml' -o -name 'application-*.properties' -o -name 'application-*.yml' \) ! -path '*/.git/*' ! -path '*/target/*' | head -4 | while read f; do echo "--- $f ---"; head -80 "$f"; done || echo 'none';
+      echo '=== JAVA_WEB_XML ===';
+      find /tmp/argus-{{ run_id }} \( -name 'web.xml' -o -name 'persistence.xml' -o -name 'beans.xml' -o -name 'security.xml' \) ! -path '*/.git/*' ! -path '*/target/*' | head -3 | while read f; do echo "--- $f ---"; head -80 "$f"; done || echo 'none';
+      echo '=== JS_FRAMEWORK_CONFIG ===';
+      find /tmp/argus-{{ run_id }} \( -name 'next.config.js' -o -name 'next.config.ts' -o -name 'next.config.mjs' -o -name 'vite.config.ts' -o -name 'vite.config.js' -o -name 'nuxt.config.ts' -o -name 'nuxt.config.js' \) ! -path '*/.git/*' ! -path '*/node_modules/*' | head -4 | while read f; do echo "--- $f ---"; head -80 "$f"; done || echo 'none';
+      echo '=== NPM_PACKAGE_JSON ===';
+      find /tmp/argus-{{ run_id }} -maxdepth 2 -name 'package.json' ! -path '*/node_modules/*' ! -path '*/.git/*' | head -3 | while read f; do echo "--- $f ---"; head -60 "$f"; done || echo 'none';
+      echo '=== CARGO_MANIFEST ===';
+      find /tmp/argus-{{ run_id }} \( -name 'Cargo.toml' -o -name 'Cargo.lock' \) ! -path '*/.git/*' ! -path '*/target/*' | head -4 | while read f; do echo "--- $f ---"; head -100 "$f"; done || echo 'none';
+      echo '=== GO_MANIFEST ===';
+      find /tmp/argus-{{ run_id }} \( -name 'go.mod' -o -name 'go.sum' \) ! -path '*/.git/*' ! -path '*/vendor/*' | head -4 | while read f; do echo "--- $f ---"; head -100 "$f"; done || echo 'none') | head -c 20000
 
-  secret_scan:
-    name: secret_scan
+  cleanup:
+    name: cleanup
     type: script
     cmd: >-
-      gitleaks detect
-      --source /tmp/argus-{{ run_id }}
-      --report-format json
-      --report-path /tmp/argus-{{ run_id }}-leaks.json
-      --no-git 2>/dev/null;
-      cat /tmp/argus-{{ run_id }}-leaks.json 2>/dev/null || echo '[]'
+      python3 -c "
+      import shutil, os
+      shutil.rmtree('/tmp/argus-{{ run_id }}', ignore_errors=True)
+      for f in ['/tmp/argus-{{ run_id }}-leaks.json', '/tmp/argus-{{ run_id }}-grype.json']:
+          os.path.exists(f) and os.unlink(f)
+      " && echo 'cleanup done'
 
 stages:
   - id: clone_repo
@@ -83,34 +164,187 @@ stages:
     adapter: gather_code
     depends_on: [clone_repo]
 
-  - id: dependency_scan
-    adapter: dependency_scan
+  - id: gather_config
+    adapter: gather_config
     depends_on: [clone_repo]
 
-  - id: secret_scan
-    adapter: secret_scan
+  - id: run_scanners
+    tool_call:
+      name: run_all_scanners
+      args:
+        repo_dir: /tmp/argus-{{ run_id }}
     depends_on: [clone_repo]
+
+  - id: compress_scanners
+    depends_on: [run_scanners]
+    signature:
+      input:
+        run_scanners: Raw scanner outputs from all security tools
+    role:
+      name: scanner_extractor
+      type: worker
+      model_tier: synthesis
+      description: |
+        Extract security findings from raw scanner tool output.
+        The raw data is in run_scanners in the context. It has 7 keys:
+          run_scanners.dependency_scan  — pip-audit + npm-audit output
+          run_scanners.supply_chain_scan — GitHub Actions supply chain checks
+          run_scanners.secret_scan       — gitleaks secret detection JSON
+          run_scanners.grype_scan        — grype CVE scan JSON ({} = no manifests found)
+          run_scanners.semgrep_scan      — semgrep (JAVA_SEMGREP and RUST_SEMGREP sections)
+          run_scanners.gosec_scan        — gosec Go analysis JSON ({} = no Go source)
+          run_scanners.cppcheck_scan     — cppcheck C/C++ analysis ("none" = no C/C++ source)
+
+        For each scanner key, extract ONLY actual findings. Skip "none", empty results,
+        section headers, and boilerplate. Summarize each scanner's real findings as a
+        short text string (CVE IDs, secret types, rule names, file:line: message, etc.).
+        If a scanner found nothing, write "none".
+
+        Combine semgrep, gosec, and cppcheck into a single static_analysis_findings string.
+
+        You MUST return a JSON object (not an array) with exactly this structure:
+        {"dependency_findings": "...", "supply_chain_findings": "...", "secret_findings": "...", "cve_findings": "...", "static_analysis_findings": "..."}
+    output_mode: guided_json
+    output_schema:
+      type: object
+      required: [dependency_findings, supply_chain_findings, secret_findings, cve_findings, static_analysis_findings]
+      properties:
+        dependency_findings:      { type: string }
+        supply_chain_findings:    { type: string }
+        secret_findings:          { type: string }
+        cve_findings:             { type: string }
+        static_analysis_findings: { type: string }
 
   - id: code_analysis
     depends_on: [gather_code]
+    signature:
+      input:
+        run_id: Scan run identifier
+        repo_url: Repository being scanned
+        gather_code: Source code and dependency manifests collected from the repository
     role:
       name: code_analyzer
       type: worker
-      model_tier: frontier
+      model_tier: synthesis
       description: |
-        You are a security engineer reviewing Python source code for vulnerabilities.
+        You are a security engineer reviewing source code for vulnerabilities.
+        The source code to analyze is in gather_code.stdout in the context (sections: PYTHON_FILES, JS_TS_FILES, JAVA_FILES, RUST_FILES, GO_FILES, C_CPP_FILES, REQUIREMENTS).
 
-        Analyze the following source code and identify security issues.
-        Focus on: SQL injection, command injection, hardcoded secrets, weak cryptography,
-        insecure deserialization, path traversal, XSS, insecure direct object references,
-        and missing authentication/authorization checks.
+        Analyze ALL sections present and identify security issues.
+        Focus on all of the following:
 
-        Source code:
-        {{ gather_code.stdout }}
+        INJECTION: SQL injection, command injection (subprocess shell=True, os.system, Runtime.exec,
+        ProcessBuilder), LDAP injection, template injection (Jinja2/Django/Handlebars/Thymeleaf),
+        code injection (eval/exec/compile), XXE (DocumentBuilder/SAXParser without
+        setFeature(FEATURE_SECURE_PROCESSING)), JNDI injection (log4j-style ${jndi:...} in
+        user-controlled input reaching loggers), EL injection (Spring SpEL evaluated from user input).
+
+        BROKEN AUTH/CRYPTO: hardcoded secrets/credentials, weak cryptography (MD5/SHA1 for passwords,
+        ECB mode, DES/3DES), using random instead of secrets/SecureRandom for tokens,
+        non-constant-time comparisons, broken JWT (alg:none, weak secret), plaintext password storage.
+
+        UNSAFE DESERIALIZATION: pickle.loads, yaml.load (not yaml.safe_load), marshal.loads,
+        node deserialize(), Java ObjectInputStream.readObject() on untrusted data,
+        XStream without security framework, Jackson polymorphic type handling with enableDefaultTyping().
+
+        ACCESS CONTROL: missing authentication/authorization checks, IDOR, privilege escalation,
+        CSRF missing on state-changing endpoints, open redirect, SSRF (unvalidated URL fetches),
+        Spring Security misconfiguration (permitAll on sensitive paths, disabled CSRF, @PreAuthorize absent).
+
+        DATA EXPOSURE: sensitive data in logs (passwords, tokens, PII), stack traces exposed to users,
+        PII stored unencrypted, overly verbose error messages, printStackTrace() in production code.
+
+        OTHER: path traversal (File/Path constructed from user input without validation), ReDoS,
+        race conditions in file operations, insecure randomness,
+        XML External Entity via JAXB/StAX, Server-Side Template Injection in Thymeleaf/FreeMarker,
+        open redirect via HttpServletResponse.sendRedirect() with user-controlled URL.
+
+        JAVASCRIPT/TYPESCRIPT SPECIFIC:
+        XSS: React dangerouslySetInnerHTML, Angular bypassSecurityTrustHtml/bypassSecurityTrustScript,
+        innerHTML/outerHTML set from user input, document.write() with user-controlled data.
+        INJECTION: child_process.exec()/execSync() with user input (use execFile instead),
+        eval()/new Function() with user-controlled strings, vm.runInNewContext/runInThisContext,
+        template literals passed to eval, server-side template injection in EJS/Pug/Handlebars.
+        NODE.JS: path.join() / fs.readFile() with unvalidated user input (path traversal),
+        require() with dynamic user-supplied strings, __dirname concatenation without normalization.
+        EXPRESS/NEXT.JS: cors({origin:'*'}) without credentials=false, res.redirect() with
+        req.query/req.body URL (open redirect), express-session without a strong secret,
+        helmet not configured, Next.js rewrites proxying to user-controlled destinations,
+        getServerSideProps fetching user-supplied URLs (SSRF).
+        PROTOTYPE POLLUTION: Object.assign/merge from user input without __proto__ guard,
+        lodash merge/set/zipObjectDeep before v4.17.21, deep clone of untrusted JSON.
+        SUPPLY CHAIN / DEPS: using eval-like packages (serialize-javascript without sanitize,
+        vm2 before patch, node-serialize), unvalidated JSON.parse on external data.
+
+        RUST SPECIFIC:
+        MEMORY SAFETY: `unsafe {}` blocks — any unsafe block requires review for raw pointer
+        derefs, UB, or memory corruption; `std::mem::transmute` between incompatible types;
+        `from_utf8_unchecked` / `from_raw_parts` without validity checks.
+        PANICS / DENIAL OF SERVICE: `unwrap()` / `expect()` on values derived from external
+        input (network, files, user data) — panics crash the process.
+        INJECTION: `std::process::Command` with user-supplied arguments without allowlist
+        validation; `std::fs::File::open` / `read_to_string` with user-controlled paths
+        (path traversal).
+        INTEGER SAFETY: `as` casting between integer types that truncates or wraps
+        (e.g., `u64 as u32` on untrusted values), arithmetic without checked_add/checked_mul
+        on untrusted input.
+        ALLOCATION OVERFLOW: `usize` multiplication or addition used as a capacity or length
+        argument (`Vec::with_capacity(a * b)`, `reserve(n + k)`, `set_len`) where either
+        operand derives from parsed or external input — use `checked_mul`/`checked_add` or
+        `saturating_*` variants; missing bounds check on the product before allocation.
+        PARSE-AND-ALLOCATE: functions that both compute a size from parsed/external data
+        (byte slices, network frames, file headers) AND pass that size to an allocator in the
+        same scope — flag when the size is not validated against a maximum before use.
+        CRYPTOGRAPHY: use of `rand::thread_rng` instead of `rand::rngs::OsRng` for secrets;
+        hardcoded keys/nonces in crypto primitives.
+
+        GO SPECIFIC:
+        INJECTION: `database/sql` queries built with string formatting (`fmt.Sprintf("SELECT
+        ... WHERE id=%s", userInput)`) instead of parameterized queries; `os/exec.Command`
+        or `exec.CommandContext` with user-controlled arguments (use allowlists).
+        SSRF: `http.Get` / `http.Post` / `http.NewRequest` with a URL derived from user
+        input without scheme/host validation.
+        TLS: `tls.Config{InsecureSkipVerify: true}` — disables certificate verification.
+        RANDOMNESS: `math/rand` used for security-sensitive values (tokens, IDs) instead
+        of `crypto/rand`.
+        XSS: `text/template` used to render HTML — use `html/template` which auto-escapes.
+        UNSAFE: `unsafe.Pointer` arithmetic; `reflect.SliceHeader` / `reflect.StringHeader`
+        manipulation; CGo without bounds checks.
+        PATH TRAVERSAL: `filepath.Join` or `os.Open` with user-controlled segments without
+        `filepath.Clean` and prefix validation.
+        RACE CONDITIONS: shared mutable state accessed from goroutines without synchronization
+        (missing mutex or channel), `sync.Mutex` not used as value receiver (copy of mutex).
+        WEAK CRYPTO: `md5.New()` / `sha1.New()` for password hashing or HMAC secrets;
+        `crypto/rc4` or `crypto/des` usage.
+        PARSE-AND-ALLOCATE: functions that compute a buffer size from parsed/external data
+        (binary frames, network packets, file headers) and pass it directly to `make([]byte,
+        size)` or `make([]T, size)` without validating `size` against a maximum — integer
+        overflow in the size expression (`size = a*b` with user-controlled a or b) feeding
+        the allocator; always validate and cap parsed sizes before allocation.
+
+        C/C++ SPECIFIC:
+        INJECTION: system()/popen()/exec()/execve() with user-supplied strings (command injection);
+        sprintf/strcpy/strcat without bounds checking — use snprintf/strlcpy/strlcat instead.
+        BUFFER OVERFLOW: fixed-size stack or heap arrays indexed or written using external values
+        without bounds check; off-by-one NUL terminator (malloc(strlen(s)) missing +1);
+        gets() or scanf("%s") — both unbounded; fread() writing beyond allocated buffer.
+        INTEGER SAFETY: signed/unsigned mismatch in size comparisons; integer overflow before
+        malloc (n*m where n or m are from user input, wrapping to small allocation);
+        size_t truncation when cast to int.
+        MEMORY MANAGEMENT: use-after-free (pointer used after free()); double-free (free() called
+        twice on same pointer, especially on error paths); missing NULL check after malloc();
+        memory leak (malloc'd buffer not freed on all return paths).
+        FORMAT STRING: printf/fprintf/syslog with user-controlled format argument (no %s wrapper).
+        Note: cppcheck handles mechanical memory safety at the tool level; focus here on logic,
+        authentication flows, and injection patterns that static checkers miss.
 
         For each vulnerability found, provide the file name, approximate line number,
         severity (critical/high/medium/low), vulnerability type, a clear description,
         and a specific recommendation to fix it.
+
+        You MUST return a JSON object (not an array) with exactly this structure:
+        {"vulnerabilities": [...], "files_reviewed": <integer>}
+        Do NOT return a bare array. The top-level value must be a JSON object {}.
     output_mode: guided_json
     output_schema:
       type: object
@@ -134,27 +368,116 @@ stages:
         stage: code_analysis
         max: 2
 
+  - id: config_analysis
+    depends_on: [gather_config]
+    signature:
+      input:
+        run_id: Scan run identifier
+        repo_url: Repository being scanned
+        gather_config: Infrastructure and configuration files collected from the repository
+    role:
+      name: config_analyzer
+      type: worker
+      model_tier: synthesis
+      description: |
+        You are a security engineer reviewing infrastructure and framework configuration for vulnerabilities.
+        The configuration files to analyze are in gather_config.stdout in the context (sections: DOCKER, COMPOSE, FRAMEWORK_SETTINGS, ENV_TEMPLATES, CI_WORKFLOWS, JAVA_BUILD, SPRING_CONFIG, JAVA_WEB_XML, JS_FRAMEWORK_CONFIG, NPM_PACKAGE_JSON, CARGO_MANIFEST, GO_MANIFEST).
+        Do NOT use tools or read files.
+
+        Check for ALL of the following:
+
+        FRAMEWORK MISCONFIGURATION: DEBUG=True in production, ALLOWED_HOSTS=['*'], hardcoded SECRET_KEY,
+        missing CSRF middleware, insecure session settings, exposed admin interfaces without IP restriction.
+
+        CORS/HEADERS: allow_origins=["*"] without credentials check, missing security headers
+        (HSTS, CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy).
+
+        DOCKER SECURITY: running as root (no USER instruction), COPY . . including sensitive files,
+        secrets in ENV instructions, latest tag usage, unnecessary exposed ports, --privileged flag.
+
+        CI/CD SECURITY: third-party GitHub Actions not pinned to SHA, excessive workflow permissions
+        (contents: write when not needed), secrets referenced in run: steps that could leak to logs,
+        pull_request_target with checkout of untrusted code.
+
+        ENVIRONMENT: .env.example revealing sensitive variable names, plaintext credentials in
+        docker-compose env sections, missing secret management (should use Vault/SSM/Secrets Manager).
+
+        JAVA/SPRING CONFIGURATION: Spring Boot actuator endpoints exposed without authentication
+        (management.endpoints.web.exposure.include=*), spring.security.enabled=false or
+        security.basic.enabled=false, hardcoded datasource passwords in application.properties,
+        spring.jpa.show-sql=true in production, server.error.include-stacktrace=always,
+        spring.devtools.remote.secret set (enables remote debugging), debug=true in Spring Boot,
+        H2 console enabled in production (spring.h2.console.enabled=true).
+
+        JAVA WEB.XML: missing HttpOnly/Secure cookie flags in session-config, weak session timeout,
+        missing security-constraint elements, HTTP methods not restricted, missing transport-guarantee
+        CONFIDENTIAL for sensitive URLs, default error pages exposing stack traces.
+
+        JAVASCRIPT FRAMEWORK CONFIGURATION: Next.js — dangerouslyAllowSVG without contentDispositionType,
+        images.domains or remotePatterns allowing wildcard hosts, headers() missing X-Frame-Options/CSP,
+        rewrites() proxying to user-controlled destinations, i18n locales without locale detection
+        safeguards; Vite — server.cors:true in production builds, base set to user-controllable value,
+        define exposing secrets (process.env.SECRET_KEY baked into bundle);
+        General package.json — scripts running curl|bash or piping to sh (supply chain risk),
+        dependencies on packages with no lock file (floating versions without lock = reproducibility risk).
+
+        You MUST return a JSON object (not an array) with exactly this structure:
+        {"vulnerabilities": [...], "files_reviewed": <integer>}
+        Do NOT return a bare array. The top-level value must be a JSON object {}.
+    output_mode: guided_json
+    output_schema:
+      type: object
+      required: [vulnerabilities, files_reviewed]
+      properties:
+        vulnerabilities:
+          type: array
+          items:
+            type: object
+            required: [file, line_approx, severity, type, description, recommendation]
+            properties:
+              file:           { type: string }
+              line_approx:    { type: integer }
+              severity:       { type: string, enum: [critical, high, medium, low] }
+              type:           { type: string }
+              description:    { type: string }
+              recommendation: { type: string }
+        files_reviewed: { type: integer }
+    on_fail:
+      loop:
+        stage: config_analysis
+        max: 2
+
   - id: synthesize_findings
-    depends_on: [code_analysis, dependency_scan, secret_scan]
+    depends_on: [code_analysis, config_analysis, compress_scanners]
+    signature:
+      input:
+        run_id: Scan run identifier
+        repo_url: Repository being scanned
+        code_analysis: LLM code vulnerability analysis (JSON)
+        config_analysis: LLM infrastructure and config analysis (JSON)
+        compress_scanners: Extracted scanner findings (dependency, supply_chain, secrets, CVEs, static analysis)
     role:
       name: synthesizer
       type: orchestrator
-      model_tier: frontier
+      model_tier: synthesis
       description: |
-        You are combining security findings from three sources into a unified list.
+        You are combining security findings from seven sources into a unified list.
+        All source data is in the context provided with this message. Do NOT use tools.
 
-        SOURCE 1 -- LLM code analysis findings (JSON):
-        {{ code_analysis }}
+        The seven sources are:
+          SOURCE 1 — code_analysis                         (LLM code vulnerability analysis, JSON)
+          SOURCE 2 — config_analysis                       (LLM infrastructure/config analysis, JSON)
+          SOURCE 3 — compress_scanners.dependency_findings  (pip-audit + npm-audit findings)
+          SOURCE 4 — compress_scanners.supply_chain_findings (GitHub Actions supply chain findings)
+          SOURCE 5 — compress_scanners.secret_findings      (gitleaks secret detection findings)
+          SOURCE 6 — compress_scanners.cve_findings         (grype CVE scan findings)
+          SOURCE 7 — compress_scanners.static_analysis_findings (semgrep + gosec + cppcheck static analysis)
 
-        SOURCE 2 -- pip-audit dependency vulnerability scan (JSON stdout):
-        {{ dependency_scan.stdout }}
-
-        SOURCE 3 -- gitleaks secret scan (JSON stdout):
-        {{ secret_scan.stdout }}
-
-        Combine all findings into a single deduplicated list. Assign each finding a unique ID
-        (F001, F002, ...). Classify the source as: code_analysis | dependency | secrets | ci.
-        Do not invent findings not present in the sources above.
+        Read all seven sources from the context and combine them into a single deduplicated list.
+        Assign each finding a unique ID (F001, F002, ...).
+        Classify source as: code_analysis | config | dependency | supply_chain | secrets.
+        Map grype findings to source=dependency. Map semgrep, gosec, and cppcheck to source=code_analysis.
+        Do not invent findings not present in the sources.
     output_mode: guided_json
     output_schema:
       type: object
@@ -167,7 +490,7 @@ stages:
             required: [id, source, severity, title, description, recommendation]
             properties:
               id:             { type: string }
-              source:         { type: string, enum: [code_analysis, dependency, secrets, ci] }
+              source:         { type: string, enum: [code_analysis, config, dependency, supply_chain, secrets] }
               severity:       { type: string, enum: [critical, high, medium, low] }
               title:          { type: string }
               file:           { type: string }
@@ -185,15 +508,17 @@ stages:
 
   - id: prioritize_tasks
     depends_on: [synthesize_findings]
+    signature:
+      input:
+        run_id: Scan run identifier
+        synthesize_findings: Unified deduplicated findings list to prioritize
     role:
       name: prioritizer
       type: orchestrator
-      model_tier: frontier
+      model_tier: synthesis
       description: |
         You are a security engineer creating a prioritized remediation plan.
-
-        Findings to prioritize (JSON):
-        {{ synthesize_findings }}
+        The unified findings list is in synthesize_findings in the context.
 
         Rank all findings by: (1) severity, (2) exploitability, (3) ease of fix.
         Assign effort as low (< 1 hour), medium (1-4 hours), or high (> 4 hours).
@@ -218,10 +543,16 @@ stages:
 
   - id: validate_findings
     depends_on: [prioritize_tasks]
+    signature:
+      input:
+        run_id: Scan run identifier
+        prioritize_tasks: Prioritized remediation task list to validate
+        synthesize_findings: Original findings for cross-reference
+        _false_positive_memory: False positive patterns identified in prior scans (rolling history)
     role:
       name: validator
       type: judge
-      model_tier: frontier
+      model_tier: synthesis
       description: |
         You are a senior security engineer performing a final review before this report is shown to a human.
 
@@ -230,11 +561,9 @@ stages:
         - Misclassified severity (flag anything that should be higher or lower)
         - Priority ordering errors (flag if the order seems wrong)
 
-        Prioritized tasks (JSON):
-        {{ prioritize_tasks }}
-
-        Original findings (JSON):
-        {{ synthesize_findings }}
+        The prioritized tasks are in prioritize_tasks in the context.
+        The original findings are in synthesize_findings in the context.
+        Prior false positive patterns are in _false_positive_memory (use as soft signal — not a blocklist).
 
         If there are no significant issues, set accept=true with confidence >= 0.8.
         If false positives are found, list them by finding_id.
@@ -253,51 +582,65 @@ stages:
         stage: validate_findings
         max: 2
 
-  - id: human_approval
-    gate: human
-    depends_on: [validate_findings]
-
   - id: generate_report
-    depends_on: [human_approval]
+    depends_on: [validate_findings]
+    signature:
+      input:
+        run_id: Scan run identifier
+        repo_url: Repository being scanned
+        validate_findings: Validator review with confidence score and false positive flags
+        prioritize_tasks: Prioritized remediation task list
+        synthesize_findings: Full findings with descriptions and recommendations
     role:
       name: reporter
       type: worker
-      model_tier: frontier
+      model_tier: synthesis
       description: |
-        Generate a detailed, actionable Markdown security report. The report must be specific enough that a developer can make the exact fix without looking at the source code.
+        IMPORTANT: You have NO access to tools, shell commands, or file systems. Do NOT attempt to read files or use any tools. All data required to write this report is already provided below.
+
+        Generate a detailed, actionable Markdown security report rendered with rich formatting.
+        The report must be specific enough that a developer can make the exact fix without looking at the source code.
+
+        FORMATTING RULES — follow these exactly:
+        - Use these emoji severity badges in ALL places where severity appears (table cells, headings, lists):
+            🔴 Critical   🟠 High   🟡 Medium   🟢 Low
+        - Use GitHub-flavored callout syntax for key warnings in the Executive Summary:
+            > [!CAUTION]
+            > (text for critical/high severity items that need immediate attention)
+        - In the Risk Summary table, the Severity column must contain the emoji badge: e.g. `🔴 Critical`
+        - In Detailed Findings headings, include the emoji: e.g. `#### [F001] SQL Injection (🔴 Critical)`
 
         Repository scanned: {{ repo_url }}
         Run ID: {{ run_id }}
 
-        Validated findings (JSON):
-        {{ validate_findings }}
+        Exclude these finding IDs (false positives): {{ validate_findings.false_positive_ids }}
+        Validator confidence: {{ validate_findings.confidence }}
 
-        Prioritized tasks (JSON):
-        {{ prioritize_tasks }}
-
-        Synthesized findings (JSON):
-        {{ synthesize_findings }}
-
-        Code that was analyzed:
-        {{ gather_code.stdout }}
-
-        Do not include any finding whose id appears in validate_findings.false_positive_ids.
+        The prioritized tasks are in prioritize_tasks in the context.
+        The synthesized findings detail is in synthesize_findings in the context.
 
         Structure the Markdown report as follows:
 
         ## Security Scan Report
 
         ### Executive Summary
-        3-5 sentences: what repo was scanned, total findings by severity, the single highest-priority item to fix first and why.
+
+        3-5 sentences: what repo was scanned, total findings by severity (use emoji badges inline,
+        e.g. "2 🔴 Critical, 3 🟠 High"), the single highest-priority item and why.
+
+        If any Critical or High findings exist, add a callout block:
+        > [!CAUTION]
+        > (one sentence naming the most urgent issue and its immediate risk)
 
         ### Risk Summary
 
         A table with columns: Priority | ID | Title | File | Lines | Severity | Source | Effort
+        — Severity column values must use emoji badges: 🔴 Critical / 🟠 High / 🟡 Medium / 🟢 Low
 
         ### Prioritized Remediation Tasks
 
         Numbered list matching the prioritize_tasks order. For each:
-        - **[Priority N] Title** (Severity, Effort)
+        - **[Priority N] Title** (🔴 Critical · low effort)
           - File: `path/to/file.py`, lines X–Y
           - One sentence on why this is the priority ranking.
 
@@ -305,10 +648,10 @@ stages:
 
         One subsection per finding (in priority order). For each finding use this exact structure:
 
-        #### [ID] Title (Severity)
+        #### [ID] Title (🔴 Critical)
 
         **File:** `relative/path/to/file.py`, line(s) N–M
-        **Source:** code_analysis | dependency | secrets | ci
+        **Source:** code_analysis | config | dependency | supply_chain | secrets
         **Concern:** Clear description of the vulnerability and what an attacker could do with it.
 
         **Vulnerable code:**
@@ -325,41 +668,81 @@ stages:
 
         ---
 
+        ### Scan Coverage
+
+        List every vulnerability category and tool checked, organized by section.
+        Use ✓ checkmarks for all items.
+
+        **Source Code Analysis** (Python + JavaScript/TypeScript + Java + Rust + Go)
+        ✓ SQL injection · ✓ Command injection (subprocess shell=True, os.system, os/exec, Command) · ✓ LDAP injection
+        ✓ Template injection (Jinja2, Django, Handlebars, Thymeleaf) · ✓ Code injection (eval/exec/compile)
+        ✓ XXE (XML External Entity) · ✓ Hardcoded secrets and credentials
+        ✓ Weak cryptography (MD5/SHA1 for passwords, ECB mode, DES) · ✓ Insecure randomness (random vs secrets/crypto/rand)
+        ✓ Non-constant-time comparisons · ✓ Broken JWT (alg:none, weak secret)
+        ✓ Unsafe deserialization (pickle, yaml.load, marshal, node deserialize, ObjectInputStream)
+        ✓ Missing authentication/authorization · ✓ Insecure direct object references (IDOR)
+        ✓ CSRF missing on state-changing endpoints · ✓ Open redirect · ✓ SSRF
+        ✓ Sensitive data in logs · ✓ Path traversal · ✓ ReDoS (user-controlled regex)
+        ✓ Race conditions in file operations · ✓ Prototype pollution (JS)
+        ✓ Rust unsafe blocks / memory unsafety · ✓ Rust unwrap() panic on external input
+        ✓ Rust integer overflow via as casting · ✓ Go InsecureSkipVerify TLS · ✓ Go text/template XSS
+        ✓ Go goroutine race conditions · ✓ Go unsafe.Pointer usage
+
+        **Infrastructure & Configuration Analysis**
+        ✓ Framework misconfiguration (DEBUG mode, ALLOWED_HOSTS, SECRET_KEY)
+        ✓ CORS policy (allow_origins=*) · ✓ Missing security headers (HSTS, CSP, X-Frame-Options)
+        ✓ Docker security (root user, COPY . ., secrets in ENV, latest tag, exposed ports)
+        ✓ CI/CD security (unpinned actions, excessive permissions, secret leakage in run steps)
+        ✓ Environment configuration (plaintext credentials, missing secret management)
+
+        **Dependency Scanning** (pip-audit + npm/pnpm audit + grype)
+        ✓ Known CVEs in Python dependencies · ✓ Known CVEs in JavaScript/Node.js dependencies
+        ✓ Known CVEs in Java/Maven/Gradle dependencies (grype) · ✓ Known CVEs in Rust crates (grype + Cargo.lock)
+        ✓ Known CVEs in Go modules (grype + go.sum) · ✓ Unpinned dependency versions
+        ✓ Manifest inventory (requirements.txt, pyproject.toml, package.json, Cargo.toml, go.mod)
+
+        **Go Static Analysis** (gosec)
+        ✓ SQL injection (database/sql string formatting) · ✓ Command injection (os/exec with user args)
+        ✓ SSRF (http.Get with user-controlled URL) · ✓ TLS InsecureSkipVerify
+        ✓ Weak randomness (math/rand for secrets) · ✓ File path traversal · ✓ Unsafe package usage
+        ✓ Hardcoded credentials · ✓ Integer overflow · ✓ Goroutine race conditions
+        ✓ Parse-and-allocate size overflow (make with user-controlled size)
+
+        **Rust Static Analysis** (semgrep p/rust)
+        ✓ unsafe {} blocks (memory unsafety, raw pointer dereference) · ✓ std::mem::transmute
+        ✓ Allocation overflow (Vec::with_capacity / reserve with unchecked usize arithmetic)
+        ✓ Parse-and-allocate without maximum size validation
+
+        **C/C++ Static Analysis** (cppcheck)
+        ✓ Out-of-bounds read/write · ✓ Use-after-free · ✓ Null pointer dereference
+        ✓ Memory leak · ✓ Buffer overflow (stack and heap) · ✓ Integer overflow
+        ✓ Uninitialized variable · ✓ Double free · ✓ Invalid iterator usage
+
+        **Supply Chain Analysis**
+        ✓ GitHub Actions not pinned to SHA · ✓ Excessive workflow permissions
+        ✓ Script injection via untrusted PR event refs · ✓ Secrets echoed in run steps
+        ✓ Unpinned Python dependencies
+
+        **Secret Detection** (gitleaks)
+        ✓ API keys and tokens (AWS, GCP, GitHub, Slack, etc.) · ✓ Private keys (SSH, RSA, PGP)
+        ✓ Database connection strings · ✓ JWT tokens · ✓ Generic high-entropy strings
+
         ### Scan Metadata
         - Run ID: {{ run_id }}
         - Repository: {{ repo_url }}
-        - Stages: clone_repo, gather_code, dependency_scan, secret_scan, code_analysis, synthesize_findings, prioritize_tasks, validate_findings, generate_report
+        - Stages: clone_repo, gather_code, gather_config, run_scanners, compress_scanners, code_analysis, config_analysis, synthesize_findings, prioritize_tasks, validate_findings, generate_report
+        - Validator confidence: {{ validate_findings.confidence }}
 
-        In addition to report_markdown, populate the `fixes` array with one entry per finding.
-        IMPORTANT: exclude any finding whose id appears in validate_findings.false_positive_ids from BOTH the Markdown report and the fixes array.
-        Each entry must have:
-        - finding_id: the F00N id
-        - file: path relative to repo root (e.g. "app.py" not "/tmp/argus-.../app.py")
-        - line_start and line_end: the line numbers of the vulnerable code. Use 0 if the exact line cannot be determined.
-        - title: short finding title
-        - vulnerable_code: the exact vulnerable lines as a string
-        - fixed_code: the exact replacement lines as a string
-        - explanation: one sentence on what the fix does
-
-        Use the gather_code.stdout source to find the actual vulnerable lines and their line numbers.
+        Put the complete Markdown report text into the "report" field of the JSON response.
+        Start the report with the `## Security Scan Report` heading and end after the Scan Metadata section.
+        Do NOT add code fences around the report content inside the JSON string.
     output_mode: guided_json
     output_schema:
       type: object
-      required: [report_markdown, fixes]
+      required: [report]
       properties:
-        report_markdown:
-          type: string
-        fixes:
-          type: array
-          items:
-            type: object
-            required: [finding_id, file, line_start, line_end, title, vulnerable_code, fixed_code, explanation]
-            properties:
-              finding_id:      { type: string }
-              file:            { type: string }
-              line_start:      { type: integer, minimum: 0 }
-              line_end:        { type: integer, minimum: 0 }
-              title:           { type: string }
-              vulnerable_code: { type: string }
-              fixed_code:      { type: string }
-              explanation:     { type: string }
+        report: { type: string }
+
+  - id: cleanup
+    adapter: cleanup
+    depends_on: [generate_report]
