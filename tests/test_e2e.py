@@ -18,16 +18,24 @@ async def test_scan_completes(argus_scan_results):
 
 async def test_sql_injection_found(argus_scan_results):
     results = argus_scan_results
-    code = results.get("code_analysis", {})
+    code = results.get("aggregate_code_findings", {})
     vulns = code.get("vulnerabilities", [])
     types = [v["type"].lower() for v in vulns]
     assert any("sql" in t for t in types), \
         f"Expected SQL injection finding; got types: {types}"
 
 
+async def test_aggregate_code_findings_shape(argus_scan_results):
+    agg = argus_scan_results.get("aggregate_code_findings", {})
+    assert agg, "aggregate_code_findings stage missing or empty"
+    assert "vulnerabilities" in agg, "aggregate_code_findings missing vulnerabilities key"
+    assert "files_analyzed" in agg, "aggregate_code_findings missing files_analyzed key"
+    assert agg["files_analyzed"] > 0, "Expected at least one file analyzed"
+
+
 async def test_hardcoded_secret_found(argus_scan_results):
     results = argus_scan_results
-    code_vulns = results.get("code_analysis", {}).get("vulnerabilities", [])
+    code_vulns = results.get("aggregate_code_findings", {}).get("vulnerabilities", [])
     # Scanner outputs live under the run_scanners stage key
     secret_raw = results.get("run_scanners", {}).get("secret_scan", "[]")
 

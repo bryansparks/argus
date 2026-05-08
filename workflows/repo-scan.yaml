@@ -80,6 +80,7 @@ memory:
 
 tools:
   - module: argus.tools.scanners
+  - module: argus.tools.files
 
 adapters:
   clone_repo:
@@ -92,25 +93,6 @@ adapters:
       else
         git clone --depth 1 --single-branch "{{ repo_url }}" "/tmp/argus-{{ run_id }}" 2>&1 && echo 'CLONE_OK';
       fi
-
-  gather_code:
-    name: gather_code
-    type: script
-    cmd: >-
-      (echo '=== PYTHON_FILES ===';
-      find /tmp/argus-{{ run_id }} -name '*.py' ! -path '*/.git/*' ! -path '*/venv/*' ! -path '*/.venv/*' | sort | head -12 | while read f; do echo "--- $f ---"; head -150 "$f"; done;
-      echo '=== JS_TS_FILES ===';
-      find /tmp/argus-{{ run_id }} \( -name '*.ts' -o -name '*.tsx' -o -name '*.js' -o -name '*.jsx' \) ! -path '*/node_modules/*' ! -path '*/.git/*' ! -path '*/dist/*' ! -path '*/build/*' | sort | head -12 | while read f; do echo "--- $f ---"; head -150 "$f"; done;
-      echo '=== JAVA_FILES ===';
-      find /tmp/argus-{{ run_id }} -name '*.java' ! -path '*/.git/*' ! -path '*/target/*' ! -path '*/build/*' | sort | head -12 | while read f; do echo "--- $f ---"; head -150 "$f"; done;
-      echo '=== RUST_FILES ===';
-      find /tmp/argus-{{ run_id }} -name '*.rs' ! -path '*/.git/*' ! -path '*/target/*' | sort | head -12 | while read f; do echo "--- $f ---"; head -150 "$f"; done;
-      echo '=== GO_FILES ===';
-      find /tmp/argus-{{ run_id }} -name '*.go' ! -path '*/.git/*' ! -path '*/vendor/*' | sort | head -12 | while read f; do echo "--- $f ---"; head -150 "$f"; done;
-      echo '=== C_CPP_FILES ===';
-      find /tmp/argus-{{ run_id }} \( -name '*.c' -o -name '*.cpp' -o -name '*.cc' -o -name '*.cxx' -o -name '*.h' -o -name '*.hpp' \) ! -path '*/.git/*' ! -path '*/build/*' ! -path '*/target/*' | sort | head -8 | while read f; do echo "--- $f ---"; head -150 "$f"; done;
-      echo '=== REQUIREMENTS ===';
-      find /tmp/argus-{{ run_id }} -maxdepth 3 \( -name 'requirements*.txt' -o -name 'pyproject.toml' \) | head -4 | while read f; do echo "--- $f ---"; head -60 "$f"; done || echo 'none') | head -c 56000
 
   gather_config:
     name: gather_config
@@ -160,9 +142,133 @@ stages:
         stage: clone_repo
         max: 2
 
-  - id: gather_code
-    adapter: gather_code
+  - id: list_source_files
+    tool_call:
+      name: list_source_files
+      args:
+        repo_dir: /tmp/argus-{{ run_id }}
     depends_on: [clone_repo]
+
+  - id: triage_files
+    depends_on: [list_source_files]
+    skip_if: "{{ list_source_files.total_count <= 60 }}"
+    signature:
+      input:
+        list_source_files: File manifest — list of {path, relative_path, language, size_lines} plus file_paths and total_count
+    role:
+      name: triage_analyst
+      type: worker
+      model_tier: synthesis
+      description: |
+        You are a security triage specialist. A repository has {{ list_source_files.total_count }} source files.
+        Your job is to select the 60 files most likely to contain security vulnerabilities.
+
+        The file manifest is in list_source_files.files in the context (each entry has path, relative_path, language, size_lines).
+        Return selected_files as a list of ABSOLUTE path strings (use the "path" field from the manifest, not relative_path).
+
+        Prioritize files with these characteristics:
+        - Name contains: auth, login, token, api, router, handler, upload, exec, admin, user, session, password, key, secret, crypto, db, database, query, sql, request, response, middleware, permission, role
+        - Authentication or authorization logic
+        - Database access / ORM / raw queries
+        - File I/O, subprocess calls, shell execution
+        - Network request handling, HTTP clients
+        - Configuration loaders, environment variable access
+        - Input parsing, deserialization, serialization
+
+        Deprioritize:
+        - Test files (*test*, *spec*, *fixture*)
+        - Auto-generated code, migrations, locale files
+        - Static assets, documentation
+        - Very large files (> 2000 lines) that are likely generated
+
+        Return up to 60 files. If fewer than 60 files exist, return all of them.
+    output_mode: guided_json
+    output_schema:
+      type: object
+      required: [selected_files, rationale]
+      properties:
+        selected_files:
+          type: array
+          items: {type: string}
+        rationale: {type: string}
+
+  - id: analyze_file
+    depends_on: [triage_files]
+    fan_out: 20
+    partition_source: "{{ triage_files.selected_files if not triage_files._skipped else list_source_files.file_paths }}"
+    partition_key: file_path
+    inject_file_as: file_content
+    signature:
+      input:
+        file_path: Absolute path to the source file being analyzed
+        file_content: Full text content of the source file
+    role:
+      name: file_analyst
+      type: worker
+      model_tier: synthesis
+      description: |
+        You are a security code reviewer. Analyze the source file below for security vulnerabilities.
+        The file is: {{ file_path }}
+        The full file content is in file_content in the context.
+
+        Identify every security vulnerability present. Infer the language from the file extension.
+        For each finding, provide: vulnerability type, severity, approximate line number, short title,
+        one-sentence description of the risk, and a concrete code-level recommendation.
+
+        INJECTION: SQL injection, command injection (subprocess/os.system/exec), template injection,
+        code injection (eval/exec), LDAP injection, XXE.
+
+        BROKEN AUTH / CRYPTO: hardcoded secrets, weak crypto (MD5/SHA1 for passwords, ECB, DES),
+        insecure randomness, broken JWT, plaintext password storage, non-constant-time comparison.
+
+        UNSAFE DESERIALIZATION: pickle.loads, yaml.load (not safe_load), marshal, node-serialize,
+        Java ObjectInputStream, XStream, Jackson enableDefaultTyping.
+
+        ACCESS CONTROL: missing auth/authz checks, IDOR, CSRF missing, open redirect, SSRF.
+
+        DATA EXPOSURE: sensitive data in logs, stack traces to users, PII unencrypted.
+
+        PATH / MEMORY: path traversal, buffer overflow, use-after-free, double-free, format string.
+
+        JS/TS: dangerouslySetInnerHTML, innerHTML from user data, prototype pollution, eval with user input.
+
+        RUST: unsafe blocks, unwrap() on external input, integer overflow (as casting), allocation overflow
+        (Vec::with_capacity with unchecked usize arithmetic), parse-and-allocate without max bound.
+
+        GO: database/sql with fmt.Sprintf, TLS InsecureSkipVerify, math/rand for secrets,
+        text/template for HTML, parse-and-allocate with user-controlled size.
+
+        C/C++: strcpy/gets/scanf %s, integer overflow before malloc, use-after-free, double-free,
+        printf with user-controlled format string.
+
+        If there are no findings, return an empty vulnerabilities array.
+        You MUST return a JSON object. Do NOT return a bare array.
+    output_mode: guided_json
+    output_schema:
+      type: object
+      required: [file_path, language, vulnerabilities]
+      properties:
+        file_path:  {type: string}
+        language:   {type: string}
+        vulnerabilities:
+          type: array
+          items:
+            type: object
+            required: [type, severity, line_approx, title, description, recommendation]
+            properties:
+              type:           {type: string}
+              severity:       {type: string, enum: [critical, high, medium, low]}
+              line_approx:    {type: integer}
+              title:          {type: string}
+              description:    {type: string}
+              recommendation: {type: string}
+
+  - id: aggregate_code_findings
+    tool_call:
+      name: aggregate_findings
+      args:
+        per_file_results: "{{ analyze_file }}"
+    depends_on: [analyze_file]
 
   - id: gather_config
     adapter: gather_config
@@ -214,159 +320,6 @@ stages:
         secret_findings:          { type: string }
         cve_findings:             { type: string }
         static_analysis_findings: { type: string }
-
-  - id: code_analysis
-    depends_on: [gather_code]
-    signature:
-      input:
-        run_id: Scan run identifier
-        repo_url: Repository being scanned
-        gather_code: Source code and dependency manifests collected from the repository
-    role:
-      name: code_analyzer
-      type: worker
-      model_tier: synthesis
-      description: |
-        You are a security engineer reviewing source code for vulnerabilities.
-        The source code to analyze is in gather_code.stdout in the context (sections: PYTHON_FILES, JS_TS_FILES, JAVA_FILES, RUST_FILES, GO_FILES, C_CPP_FILES, REQUIREMENTS).
-
-        Analyze ALL sections present and identify security issues.
-        Focus on all of the following:
-
-        INJECTION: SQL injection, command injection (subprocess shell=True, os.system, Runtime.exec,
-        ProcessBuilder), LDAP injection, template injection (Jinja2/Django/Handlebars/Thymeleaf),
-        code injection (eval/exec/compile), XXE (DocumentBuilder/SAXParser without
-        setFeature(FEATURE_SECURE_PROCESSING)), JNDI injection (log4j-style ${jndi:...} in
-        user-controlled input reaching loggers), EL injection (Spring SpEL evaluated from user input).
-
-        BROKEN AUTH/CRYPTO: hardcoded secrets/credentials, weak cryptography (MD5/SHA1 for passwords,
-        ECB mode, DES/3DES), using random instead of secrets/SecureRandom for tokens,
-        non-constant-time comparisons, broken JWT (alg:none, weak secret), plaintext password storage.
-
-        UNSAFE DESERIALIZATION: pickle.loads, yaml.load (not yaml.safe_load), marshal.loads,
-        node deserialize(), Java ObjectInputStream.readObject() on untrusted data,
-        XStream without security framework, Jackson polymorphic type handling with enableDefaultTyping().
-
-        ACCESS CONTROL: missing authentication/authorization checks, IDOR, privilege escalation,
-        CSRF missing on state-changing endpoints, open redirect, SSRF (unvalidated URL fetches),
-        Spring Security misconfiguration (permitAll on sensitive paths, disabled CSRF, @PreAuthorize absent).
-
-        DATA EXPOSURE: sensitive data in logs (passwords, tokens, PII), stack traces exposed to users,
-        PII stored unencrypted, overly verbose error messages, printStackTrace() in production code.
-
-        OTHER: path traversal (File/Path constructed from user input without validation), ReDoS,
-        race conditions in file operations, insecure randomness,
-        XML External Entity via JAXB/StAX, Server-Side Template Injection in Thymeleaf/FreeMarker,
-        open redirect via HttpServletResponse.sendRedirect() with user-controlled URL.
-
-        JAVASCRIPT/TYPESCRIPT SPECIFIC:
-        XSS: React dangerouslySetInnerHTML, Angular bypassSecurityTrustHtml/bypassSecurityTrustScript,
-        innerHTML/outerHTML set from user input, document.write() with user-controlled data.
-        INJECTION: child_process.exec()/execSync() with user input (use execFile instead),
-        eval()/new Function() with user-controlled strings, vm.runInNewContext/runInThisContext,
-        template literals passed to eval, server-side template injection in EJS/Pug/Handlebars.
-        NODE.JS: path.join() / fs.readFile() with unvalidated user input (path traversal),
-        require() with dynamic user-supplied strings, __dirname concatenation without normalization.
-        EXPRESS/NEXT.JS: cors({origin:'*'}) without credentials=false, res.redirect() with
-        req.query/req.body URL (open redirect), express-session without a strong secret,
-        helmet not configured, Next.js rewrites proxying to user-controlled destinations,
-        getServerSideProps fetching user-supplied URLs (SSRF).
-        PROTOTYPE POLLUTION: Object.assign/merge from user input without __proto__ guard,
-        lodash merge/set/zipObjectDeep before v4.17.21, deep clone of untrusted JSON.
-        SUPPLY CHAIN / DEPS: using eval-like packages (serialize-javascript without sanitize,
-        vm2 before patch, node-serialize), unvalidated JSON.parse on external data.
-
-        RUST SPECIFIC:
-        MEMORY SAFETY: `unsafe {}` blocks — any unsafe block requires review for raw pointer
-        derefs, UB, or memory corruption; `std::mem::transmute` between incompatible types;
-        `from_utf8_unchecked` / `from_raw_parts` without validity checks.
-        PANICS / DENIAL OF SERVICE: `unwrap()` / `expect()` on values derived from external
-        input (network, files, user data) — panics crash the process.
-        INJECTION: `std::process::Command` with user-supplied arguments without allowlist
-        validation; `std::fs::File::open` / `read_to_string` with user-controlled paths
-        (path traversal).
-        INTEGER SAFETY: `as` casting between integer types that truncates or wraps
-        (e.g., `u64 as u32` on untrusted values), arithmetic without checked_add/checked_mul
-        on untrusted input.
-        ALLOCATION OVERFLOW: `usize` multiplication or addition used as a capacity or length
-        argument (`Vec::with_capacity(a * b)`, `reserve(n + k)`, `set_len`) where either
-        operand derives from parsed or external input — use `checked_mul`/`checked_add` or
-        `saturating_*` variants; missing bounds check on the product before allocation.
-        PARSE-AND-ALLOCATE: functions that both compute a size from parsed/external data
-        (byte slices, network frames, file headers) AND pass that size to an allocator in the
-        same scope — flag when the size is not validated against a maximum before use.
-        CRYPTOGRAPHY: use of `rand::thread_rng` instead of `rand::rngs::OsRng` for secrets;
-        hardcoded keys/nonces in crypto primitives.
-
-        GO SPECIFIC:
-        INJECTION: `database/sql` queries built with string formatting (`fmt.Sprintf("SELECT
-        ... WHERE id=%s", userInput)`) instead of parameterized queries; `os/exec.Command`
-        or `exec.CommandContext` with user-controlled arguments (use allowlists).
-        SSRF: `http.Get` / `http.Post` / `http.NewRequest` with a URL derived from user
-        input without scheme/host validation.
-        TLS: `tls.Config{InsecureSkipVerify: true}` — disables certificate verification.
-        RANDOMNESS: `math/rand` used for security-sensitive values (tokens, IDs) instead
-        of `crypto/rand`.
-        XSS: `text/template` used to render HTML — use `html/template` which auto-escapes.
-        UNSAFE: `unsafe.Pointer` arithmetic; `reflect.SliceHeader` / `reflect.StringHeader`
-        manipulation; CGo without bounds checks.
-        PATH TRAVERSAL: `filepath.Join` or `os.Open` with user-controlled segments without
-        `filepath.Clean` and prefix validation.
-        RACE CONDITIONS: shared mutable state accessed from goroutines without synchronization
-        (missing mutex or channel), `sync.Mutex` not used as value receiver (copy of mutex).
-        WEAK CRYPTO: `md5.New()` / `sha1.New()` for password hashing or HMAC secrets;
-        `crypto/rc4` or `crypto/des` usage.
-        PARSE-AND-ALLOCATE: functions that compute a buffer size from parsed/external data
-        (binary frames, network packets, file headers) and pass it directly to `make([]byte,
-        size)` or `make([]T, size)` without validating `size` against a maximum — integer
-        overflow in the size expression (`size = a*b` with user-controlled a or b) feeding
-        the allocator; always validate and cap parsed sizes before allocation.
-
-        C/C++ SPECIFIC:
-        INJECTION: system()/popen()/exec()/execve() with user-supplied strings (command injection);
-        sprintf/strcpy/strcat without bounds checking — use snprintf/strlcpy/strlcat instead.
-        BUFFER OVERFLOW: fixed-size stack or heap arrays indexed or written using external values
-        without bounds check; off-by-one NUL terminator (malloc(strlen(s)) missing +1);
-        gets() or scanf("%s") — both unbounded; fread() writing beyond allocated buffer.
-        INTEGER SAFETY: signed/unsigned mismatch in size comparisons; integer overflow before
-        malloc (n*m where n or m are from user input, wrapping to small allocation);
-        size_t truncation when cast to int.
-        MEMORY MANAGEMENT: use-after-free (pointer used after free()); double-free (free() called
-        twice on same pointer, especially on error paths); missing NULL check after malloc();
-        memory leak (malloc'd buffer not freed on all return paths).
-        FORMAT STRING: printf/fprintf/syslog with user-controlled format argument (no %s wrapper).
-        Note: cppcheck handles mechanical memory safety at the tool level; focus here on logic,
-        authentication flows, and injection patterns that static checkers miss.
-
-        For each vulnerability found, provide the file name, approximate line number,
-        severity (critical/high/medium/low), vulnerability type, a clear description,
-        and a specific recommendation to fix it.
-
-        You MUST return a JSON object (not an array) with exactly this structure:
-        {"vulnerabilities": [...], "files_reviewed": <integer>}
-        Do NOT return a bare array. The top-level value must be a JSON object {}.
-    output_mode: guided_json
-    output_schema:
-      type: object
-      required: [vulnerabilities, files_reviewed]
-      properties:
-        vulnerabilities:
-          type: array
-          items:
-            type: object
-            required: [file, line_approx, severity, type, description, recommendation]
-            properties:
-              file:        { type: string }
-              line_approx: { type: integer }
-              severity:    { type: string, enum: [critical, high, medium, low] }
-              type:        { type: string }
-              description: { type: string }
-              recommendation: { type: string }
-        files_reviewed: { type: integer }
-    on_fail:
-      loop:
-        stage: code_analysis
-        max: 2
 
   - id: config_analysis
     depends_on: [gather_config]
@@ -448,12 +401,12 @@ stages:
         max: 2
 
   - id: synthesize_findings
-    depends_on: [code_analysis, config_analysis, compress_scanners]
+    depends_on: [aggregate_code_findings, config_analysis, compress_scanners]
     signature:
       input:
         run_id: Scan run identifier
         repo_url: Repository being scanned
-        code_analysis: LLM code vulnerability analysis (JSON)
+        aggregate_code_findings: Fan-out code vulnerability analysis — merged per-file findings (JSON)
         config_analysis: LLM infrastructure and config analysis (JSON)
         compress_scanners: Extracted scanner findings (dependency, supply_chain, secrets, CVEs, static analysis)
     role:
@@ -465,7 +418,7 @@ stages:
         All source data is in the context provided with this message. Do NOT use tools.
 
         The seven sources are:
-          SOURCE 1 — code_analysis                         (LLM code vulnerability analysis, JSON)
+          SOURCE 1 — aggregate_code_findings               (per-file LLM code analysis, JSON — use .vulnerabilities array)
           SOURCE 2 — config_analysis                       (LLM infrastructure/config analysis, JSON)
           SOURCE 3 — compress_scanners.dependency_findings  (pip-audit + npm-audit findings)
           SOURCE 4 — compress_scanners.supply_chain_findings (GitHub Actions supply chain findings)
@@ -730,7 +683,7 @@ stages:
         ### Scan Metadata
         - Run ID: {{ run_id }}
         - Repository: {{ repo_url }}
-        - Stages: clone_repo, gather_code, gather_config, run_scanners, compress_scanners, code_analysis, config_analysis, synthesize_findings, prioritize_tasks, validate_findings, generate_report
+        - Stages: clone_repo, list_source_files, triage_files, analyze_file (fan-out), aggregate_code_findings, gather_config, run_scanners, compress_scanners, config_analysis, synthesize_findings, prioritize_tasks, validate_findings, generate_report
         - Validator confidence: {{ validate_findings.confidence }}
 
         Put the complete Markdown report text into the "report" field of the JSON response.
