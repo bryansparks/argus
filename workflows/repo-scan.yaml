@@ -573,6 +573,13 @@ stages:
         - In the Risk Summary table, the Severity column must contain the emoji badge: e.g. `🔴 Critical`
         - In Detailed Findings headings, include the emoji: e.g. `#### [F001] SQL Injection (🔴 Critical)`
 
+        ACCURACY RULES — never violate these:
+        - Do NOT invent or guess commit SHAs for GitHub Actions. Use the placeholder
+          `<COMMIT-SHA>` and add a comment showing the gh CLI command to resolve it:
+          `# gh api repos/actions/checkout/git/ref/tags/v4 --jq .object.sha`
+        - Do NOT fabricate CVE numbers, version numbers, or line numbers not present in the findings data.
+        - Code snippets in the Fix blocks must match exactly what the findings data says; do not paraphrase or reconstruct from memory.
+
         Repository scanned: {{ repo_url }}
         Run ID: {{ run_id }}
 
