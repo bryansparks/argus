@@ -157,31 +157,57 @@ async def _grype_scan(repo_dir: str) -> str:
 
 
 async def _semgrep_scan(repo_dir: str) -> str:
-    parts = ["=== JAVA_SEMGREP ==="]
-    has_java = (await _run(
-        f"find {repo_dir} -name '*.java' ! -path '*/target/*' ! -path '*/build/*' 2>/dev/null"
-    )).strip()
-    if has_java:
-        parts.append(await _run(
-            f"semgrep scan --config p/java --json --timeout 30 --quiet {repo_dir}",
-            timeout=60,
-        ) or "{}")
-    else:
-        parts.append("{}")
+    async def _semgrep_for(lang_glob: str, section: str, config: str, extra_exclude: str = "") -> str:
+        exclude = f"! -path '*/target/*' ! -path '*/build/*' {extra_exclude}".strip()
+        has_files = (await _run(
+            f"find {repo_dir} -name '{lang_glob}' {exclude} 2>/dev/null"
+        )).strip()
+        if not has_files:
+            return f"=== {section} ===\n{{}}"
+        out = await _run(
+            f"semgrep scan --config {config} --json --timeout 30 --quiet {repo_dir}",
+            timeout=90,
+        ) or "{}"
+        return f"=== {section} ===\n{out}"
 
-    parts.append("=== RUST_SEMGREP ===")
-    has_rust = (await _run(
-        f"find {repo_dir} -name '*.rs' ! -path '*/target/*' 2>/dev/null"
-    )).strip()
-    if has_rust:
-        parts.append(await _run(
-            f"semgrep scan --config p/rust --json --timeout 30 --quiet {repo_dir}",
-            timeout=60,
-        ) or "{}")
-    else:
-        parts.append("{}")
+    results = await asyncio.gather(
+        _semgrep_for("*.java",  "JAVA_SEMGREP",  "p/java"),
+        _semgrep_for("*.rs",    "RUST_SEMGREP",  "p/rust", "! -path '*/target/*'"),
+        _semgrep_for("*.php",   "PHP_SEMGREP",   "p/php"),
+        _semgrep_for("*.rb",    "RUBY_SEMGREP",  "p/ruby"),
+    )
+    return "\n".join(results)
 
-    return "\n".join(parts)
+
+async def _mobile_scan(repo_dir: str) -> str:
+    """mobsfscan for Android (Java/Kotlin + AndroidManifest.xml) and iOS (Swift/ObjC)."""
+    has_android = (await _run(
+        f"find {repo_dir} -name 'AndroidManifest.xml' ! -path '*/.git/*' 2>/dev/null"
+    )).strip()
+    has_ios = (await _run(
+        f"find {repo_dir} \\( -name '*.swift' -o -name '*.m' \\) ! -path '*/.git/*' 2>/dev/null"
+    )).strip()
+
+    if not has_android and not has_ios:
+        return "none"
+
+    import shutil
+    if not shutil.which("mobsfscan"):
+        # Fall back to semgrep mobile rules if mobsfscan not installed
+        parts = ["=== MOBILE_SEMGREP_FALLBACK ==="]
+        if has_android:
+            parts.append(await _run(
+                f"semgrep scan --config p/kotlin --json --timeout 30 --quiet {repo_dir}",
+                timeout=90,
+            ) or "{}")
+        if has_ios:
+            parts.append(await _run(
+                f"semgrep scan --config p/swift --json --timeout 30 --quiet {repo_dir}",
+                timeout=90,
+            ) or "{}")
+        return "\n".join(parts)
+
+    return await _run(f"mobsfscan --json {repo_dir}", timeout=180) or "none"
 
 
 async def _gosec_scan(repo_dir: str) -> str:
@@ -216,7 +242,7 @@ async def _handle_run_all_scanners(args: dict) -> dict:
     if not repo_dir or not Path(repo_dir).exists():
         return {"error": f"repo_dir not found: {repo_dir}"}
 
-    dep, sc, sec, grype, semgrep, gosec, cppcheck = await asyncio.gather(
+    dep, sc, sec, grype, semgrep, gosec, cppcheck, mobile = await asyncio.gather(
         _dependency_scan(repo_dir),
         _supply_chain_scan(repo_dir),
         _secret_scan(repo_dir),
@@ -224,6 +250,7 @@ async def _handle_run_all_scanners(args: dict) -> dict:
         _semgrep_scan(repo_dir),
         _gosec_scan(repo_dir),
         _cppcheck_scan(repo_dir),
+        _mobile_scan(repo_dir),
     )
     return {
         "dependency_scan": dep,
@@ -233,6 +260,7 @@ async def _handle_run_all_scanners(args: dict) -> dict:
         "semgrep_scan": semgrep,
         "gosec_scan": gosec,
         "cppcheck_scan": cppcheck,
+        "mobile_scan": mobile,
     }
 
 
@@ -242,12 +270,15 @@ def register(registry: ToolRegistry) -> None:
     registry.register(ToolDescriptor(
         name="run_all_scanners",
         description=(
-            "Run all security scanners concurrently (pip-audit, npm/pnpm audit, "
-            "supply chain checks, gitleaks secret detection, grype CVE scan, "
-            "semgrep static analysis, gosec Go analyzer, cppcheck C/C++ analyzer) "
-            "against a cloned repository. "
+            "Run all security scanners concurrently against a cloned repository: "
+            "pip-audit + npm/pnpm audit (dependency CVEs), "
+            "multi-CI supply chain checks (GitHub Actions, GitLab, CircleCI, Jenkins, Azure), "
+            "gitleaks (secrets), grype (CVE manifest scan), "
+            "semgrep (Java, Rust, PHP, Ruby static analysis), "
+            "gosec (Go), cppcheck (C/C++), "
+            "mobsfscan or semgrep-mobile (Android/iOS — skipped if no mobile source found). "
             "Returns a dict with keys: dependency_scan, supply_chain_scan, secret_scan, "
-            "grype_scan, semgrep_scan, gosec_scan, cppcheck_scan."
+            "grype_scan, semgrep_scan, gosec_scan, cppcheck_scan, mobile_scan."
         ),
         permission=PermissionLevel.READ_ONLY,
         handler=_handle_run_all_scanners,

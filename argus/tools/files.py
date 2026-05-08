@@ -15,6 +15,32 @@ from armature.permissions.permissions import PermissionLevel
 from armature.registry.registry import ToolDescriptor, ToolRegistry
 
 
+# Security-relevant filename keywords used to rank files for triage.
+# Files whose names contain these substrings are shown first when the
+# manifest is too large to pass in full to the triage LLM.
+_SECURITY_KEYWORDS: frozenset[str] = frozenset({
+    "auth", "login", "logout", "signup", "register", "password", "passwd",
+    "token", "jwt", "oauth", "session", "cookie", "csrf", "cors",
+    "api", "endpoint", "route", "handler", "controller", "middleware",
+    "upload", "file", "exec", "shell", "command", "subprocess",
+    "admin", "user", "role", "permission", "acl", "access",
+    "sql", "query", "database", "db", "orm", "model",
+    "secret", "key", "cred", "config", "setting", "env",
+    "crypto", "cipher", "hash", "encrypt", "decrypt", "sign",
+    "http", "request", "response", "client", "fetch", "url",
+    "serial", "deserial", "pickle", "marshal", "json", "xml",
+    "log", "audit", "trace",
+})
+
+_COMPACT_MANIFEST_CAP = 3000
+
+
+def _security_score(relative_path: str) -> int:
+    """Higher score = more likely to be security-relevant (for pre-sort before LLM triage)."""
+    lower = relative_path.lower()
+    return sum(1 for kw in _SECURITY_KEYWORDS if kw in lower)
+
+
 _EXTENSIONS: dict[str, str] = {
     ".py": "python",
     ".js": "javascript", ".jsx": "javascript",
@@ -62,10 +88,27 @@ async def _handle_list_source_files(args: dict[str, Any]) -> dict[str, Any]:
             "size_lines": size_lines,
         })
 
+    # Build compact manifest: relative paths pre-sorted by security relevance.
+    # For large repos this replaces the full files array in the triage LLM prompt,
+    # keeping context usage manageable while surfacing the most relevant files first.
+    sorted_files = sorted(files, key=lambda f: _security_score(f["relative_path"]), reverse=True)
+    truncated = len(sorted_files) > _COMPACT_MANIFEST_CAP
+    manifest_entries = sorted_files[:_COMPACT_MANIFEST_CAP]
+    compact_lines = [f["relative_path"] for f in manifest_entries]
+    if truncated:
+        omitted = len(sorted_files) - _COMPACT_MANIFEST_CAP
+        compact_lines.append(
+            f"[... {omitted} additional files omitted — "
+            "security-relevant files prioritized above ...]"
+        )
+    compact_manifest = "\n".join(compact_lines)
+
     return {
         "files": files,
         "file_paths": [f["path"] for f in files],
         "total_count": len(files),
+        "compact_manifest": compact_manifest,
+        "compact_manifest_truncated": truncated,
     }
 
 
@@ -80,8 +123,13 @@ async def _handle_read_file(args: dict[str, Any]) -> dict[str, Any]:
         return {"error": str(exc), "path": path, "content": ""}
 
 
+_SEVERITY_RANK: dict[str, int] = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+_MAX_FINDINGS_DEFAULT = 120
+
+
 async def _handle_aggregate_findings(args: dict[str, Any]) -> dict[str, Any]:
     per_file = args.get("per_file_results", [])
+    max_findings: int = int(args.get("max_findings", _MAX_FINDINGS_DEFAULT))
     if not isinstance(per_file, list):
         return {"error": "per_file_results must be a list", "vulnerabilities": [], "files_analyzed": 0, "total_findings": 0}
 
@@ -103,10 +151,25 @@ async def _handle_aggregate_findings(args: dict[str, Any]) -> dict[str, Any]:
             seen.add(key)
             merged.append({**v, "file": file_path})
 
+    total_before = len(merged)
+    truncation_note = ""
+    if total_before > max_findings:
+        # Sort by severity (critical first) then keep the top max_findings
+        merged.sort(key=lambda v: _SEVERITY_RANK.get(v.get("severity", "low"), 3))
+        merged = merged[:max_findings]
+        omitted = total_before - max_findings
+        truncation_note = (
+            f"{omitted} lower-severity findings omitted to keep synthesis context manageable "
+            f"(total before cap: {total_before}, cap: {max_findings}). "
+            "Critical and high findings are fully included."
+        )
+
     return {
         "vulnerabilities": merged,
         "files_analyzed": len(per_file),
-        "total_findings": len(merged),
+        "total_findings": total_before,
+        "findings_included": len(merged),
+        "truncation_note": truncation_note,
     }
 
 
@@ -147,7 +210,10 @@ def register(registry: ToolRegistry) -> None:
         description=(
             "Merge and deduplicate per-file vulnerability lists from a fan-out analysis. "
             "Takes the list of all analyze_file results, deduplicates by (file, type, line), "
-            "and returns a unified vulnerabilities array compatible with synthesize_findings."
+            "sorts by severity, and caps output at max_findings (default 120) to prevent "
+            "synthesis context overflow on large repos. Critical/high findings are kept first. "
+            "Returns vulnerabilities, files_analyzed, total_findings (before cap), "
+            "findings_included (after cap), and truncation_note."
         ),
         permission=PermissionLevel.READ_ONLY,
         handler=_handle_aggregate_findings,
@@ -155,6 +221,11 @@ def register(registry: ToolRegistry) -> None:
             "per_file_results": {
                 "type": "array",
                 "description": "List of analyze_file stage outputs (one dict per file)",
-            }
+            },
+            "max_findings": {
+                "type": "integer",
+                "description": "Maximum findings to return after dedup (default 120). "
+                               "Excess lower-severity findings are dropped.",
+            },
         },
     ))

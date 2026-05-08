@@ -166,7 +166,7 @@ stages:
     skip_if: "{{ list_source_files.total_count <= 60 }}"
     signature:
       input:
-        list_source_files: File manifest — list of {path, relative_path, language, size_lines} plus file_paths and total_count
+        list_source_files: File manifest with compact_manifest (newline-separated relative paths, security-sorted), file_paths (absolute), and total_count
     role:
       name: triage_analyst
       type: worker
@@ -175,8 +175,16 @@ stages:
         You are a security triage specialist. A repository has {{ list_source_files.total_count }} source files.
         Your job is to select the 60 files most likely to contain security vulnerabilities.
 
-        The file manifest is in list_source_files.files in the context (each entry has path, relative_path, language, size_lines).
-        Return selected_files as a list of ABSOLUTE path strings (use the "path" field from the manifest, not relative_path).
+        The file list is in list_source_files.compact_manifest in the context — one relative path per line,
+        pre-sorted so the most security-relevant filenames appear first.
+        {% if list_source_files.compact_manifest_truncated %}
+        NOTE: The manifest was truncated at 3000 entries. Security-relevant files were prioritized
+        before truncation, so the most important files appear at the top.
+        {% endif %}
+
+        To return selected files you need ABSOLUTE paths. The absolute paths are in
+        list_source_files.file_paths — match relative paths from compact_manifest to their
+        absolute counterparts (replace the repo root prefix).
 
         Prioritize files with these characteristics:
         - Name contains: auth, login, token, api, router, handler, upload, exec, admin, user, session, password, key, secret, crypto, db, database, query, sql, request, response, middleware, permission, role
@@ -253,6 +261,16 @@ stages:
         C/C++: strcpy/gets/scanf %s, integer overflow before malloc, use-after-free, double-free,
         printf with user-controlled format string.
 
+        RUBY: SQL injection (string interpolation in ActiveRecord queries), command injection
+        (backtick execution, system/exec with user input), mass assignment without strong params,
+        insecure deserialization (Marshal.load), hardcoded secrets, unsafe YAML.load,
+        open redirect in redirect_to, XSS via html_safe / raw / content_tag without escaping.
+
+        PHP: SQL injection (mysqli/PDO string concat), command injection (exec/system/passthru
+        with user input), file inclusion (include/require with user path), unserialize on
+        user input, hardcoded credentials, weak crypto (md5/sha1 for passwords), XSS
+        (echo $_GET without htmlspecialchars).
+
         If there are no findings, return an empty vulnerabilities array.
         You MUST return a JSON object. Do NOT return a bare array.
     output_mode: guided_json
@@ -309,16 +327,17 @@ stages:
           run_scanners.supply_chain_scan — CI/CD supply chain checks (GitHub Actions, GitLab CI, CircleCI, Jenkins, Azure Pipelines + unpinned deps)
           run_scanners.secret_scan       — gitleaks secret detection JSON
           run_scanners.grype_scan        — grype CVE scan JSON ({} = no manifests found)
-          run_scanners.semgrep_scan      — semgrep (JAVA_SEMGREP and RUST_SEMGREP sections)
+          run_scanners.semgrep_scan      — semgrep (JAVA_SEMGREP, RUST_SEMGREP, PHP_SEMGREP, RUBY_SEMGREP sections)
           run_scanners.gosec_scan        — gosec Go analysis JSON ({} = no Go source)
           run_scanners.cppcheck_scan     — cppcheck C/C++ analysis ("none" = no C/C++ source)
+          run_scanners.mobile_scan       — mobsfscan/semgrep Android+iOS analysis ("none" = no mobile source)
 
         For each scanner key, extract ONLY actual findings. Skip "none", empty results,
         section headers, and boilerplate. Summarize each scanner's real findings as a
         short text string (CVE IDs, secret types, rule names, file:line: message, etc.).
         If a scanner found nothing, write "none".
 
-        Combine semgrep, gosec, and cppcheck into a single static_analysis_findings string.
+        Combine semgrep, gosec, cppcheck, and mobile_scan into a single static_analysis_findings string.
 
         You MUST return a JSON object (not an array) with exactly this structure:
         {"dependency_findings": "...", "supply_chain_findings": "...", "secret_findings": "...", "cve_findings": "...", "static_analysis_findings": "..."}
@@ -455,13 +474,14 @@ stages:
         All source data is in the context provided with this message. Do NOT use tools.
 
         The seven sources are:
-          SOURCE 1 — aggregate_code_findings               (per-file LLM code analysis, JSON — use .vulnerabilities array)
+          SOURCE 1 — aggregate_code_findings               (per-file LLM code analysis, JSON — use .vulnerabilities array;
+                     if .truncation_note is non-empty, note that lower-severity findings were capped to prevent context overflow)
           SOURCE 2 — config_analysis                       (LLM infrastructure/config analysis, JSON)
           SOURCE 3 — compress_scanners.dependency_findings  (pip-audit + npm-audit findings)
           SOURCE 4 — compress_scanners.supply_chain_findings (CI/CD supply chain findings: GitHub Actions, GitLab CI, CircleCI, Jenkins, Azure Pipelines, unpinned deps)
           SOURCE 5 — compress_scanners.secret_findings      (gitleaks secret detection findings)
           SOURCE 6 — compress_scanners.cve_findings         (grype CVE scan findings)
-          SOURCE 7 — compress_scanners.static_analysis_findings (semgrep + gosec + cppcheck static analysis)
+          SOURCE 7 — compress_scanners.static_analysis_findings (semgrep [Java/Rust/PHP/Ruby] + gosec + cppcheck + mobile_scan static analysis)
 
         Read all seven sources and combine them into a single deduplicated list.
         Assign each finding a unique ID (F001, F002, ...).
@@ -680,7 +700,7 @@ stages:
         List every vulnerability category and tool checked, organized by section.
         Use ✓ checkmarks for all items.
 
-        **Source Code Analysis** (Python + JavaScript/TypeScript + Java + Rust + Go)
+        **Source Code Analysis** (Python + JavaScript/TypeScript + Java + Rust + Go + Ruby + PHP)
         ✓ SQL injection · ✓ Command injection (subprocess shell=True, os.system, os/exec, Command) · ✓ LDAP injection
         ✓ Template injection (Jinja2, Django, Handlebars, Thymeleaf) · ✓ Code injection (eval/exec/compile)
         ✓ XXE (XML External Entity) · ✓ Hardcoded secrets and credentials
@@ -694,6 +714,13 @@ stages:
         ✓ Rust unsafe blocks / memory unsafety · ✓ Rust unwrap() panic on external input
         ✓ Rust integer overflow via as casting · ✓ Go InsecureSkipVerify TLS · ✓ Go text/template XSS
         ✓ Go goroutine race conditions · ✓ Go unsafe.Pointer usage
+        ✓ Ruby SQL injection (ActiveRecord string interpolation) · ✓ Ruby mass assignment · ✓ Ruby open redirect
+        ✓ PHP SQL injection · ✓ PHP file inclusion · ✓ PHP command injection · ✓ PHP unserialize
+
+        **Mobile Application Analysis** (Android + iOS — when source present)
+        ✓ Android: hardcoded secrets, insecure data storage, exported components, weak crypto
+        ✓ Android: intent injection, SQL injection in content providers, WebView JS bridge
+        ✓ iOS: insecure keychain usage, ATS disabled, hardcoded keys, weak NSURLSession config
 
         **Infrastructure & Configuration Analysis**
         ✓ Framework misconfiguration (DEBUG mode, ALLOWED_HOSTS, SECRET_KEY)
