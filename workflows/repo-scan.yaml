@@ -426,11 +426,21 @@ stages:
           SOURCE 6 — compress_scanners.cve_findings         (grype CVE scan findings)
           SOURCE 7 — compress_scanners.static_analysis_findings (semgrep + gosec + cppcheck static analysis)
 
-        Read all seven sources from the context and combine them into a single deduplicated list.
+        Read all seven sources and combine them into a single deduplicated list.
         Assign each finding a unique ID (F001, F002, ...).
         Classify source as: code_analysis | config | dependency | supply_chain | secrets.
         Map grype findings to source=dependency. Map semgrep, gosec, and cppcheck to source=code_analysis.
         Do not invent findings not present in the sources.
+
+        DEDUPLICATION RULES — apply before emitting any finding:
+        1. Same file + same vulnerability class (e.g. "unpinned action", "SQL injection", "hardcoded secret"):
+           emit ONE finding, not one per source. Use the richer description of the two.
+        2. Supply chain scanner and config_analysis often both flag unpinned GitHub Actions on the same
+           file/line — merge into a single finding with source=supply_chain.
+        3. gitleaks and code_analysis may both flag the same hardcoded secret — merge, source=secrets.
+        4. Two dependency findings for the same CVE ID or package — merge into one, source=dependency.
+        5. When merging, prefer the description from the source with the most detail (line number,
+           code snippet, or CVE ID). Keep the higher of the two severity ratings.
     output_mode: guided_json
     output_schema:
       type: object
