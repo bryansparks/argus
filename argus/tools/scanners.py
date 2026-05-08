@@ -19,22 +19,22 @@ from armature.registry.registry import ToolDescriptor, ToolRegistry
 
 # ── low-level subprocess helper ───────────────────────────────────────────────
 
-def _run_sync(cmd: str, timeout: int = 120, cwd: str | None = None) -> str:
-    """Run a shell command, return stdout capped at 3 KiB."""
+def _run_sync(cmd: str, timeout: int = 120, cwd: str | None = None, max_bytes: int = 4000) -> str:
+    """Run a shell command, return stdout capped at max_bytes."""
     try:
         result = subprocess.run(
             cmd, shell=True, capture_output=True, text=True, timeout=timeout, cwd=cwd
         )
         out = result.stdout or ""
-        return out[:3000]
+        return out[:max_bytes]
     except subprocess.TimeoutExpired:
         return f"TIMEOUT after {timeout}s"
     except Exception as exc:
         return f"ERROR: {exc}"
 
 
-async def _run(cmd: str, timeout: int = 120, cwd: str | None = None) -> str:
-    return await asyncio.to_thread(_run_sync, cmd, timeout, cwd)
+async def _run(cmd: str, timeout: int = 120, cwd: str | None = None, max_bytes: int = 4000) -> str:
+    return await asyncio.to_thread(_run_sync, cmd, timeout, cwd, max_bytes)
 
 
 # ── individual scanners ────────────────────────────────────────────────────────
@@ -69,23 +69,60 @@ async def _dependency_scan(repo_dir: str) -> str:
 
 
 async def _supply_chain_scan(repo_dir: str) -> str:
-    cmd = (
+    github_cmd = (
         f"cd {repo_dir} && "
-        "echo '=== UNPINNED_ACTIONS ===' && "
+        "echo '=== GITHUB_UNPINNED_ACTIONS ===' && "
         "(grep -rn 'uses:' .github/workflows/ 2>/dev/null | grep -v '@[a-f0-9]\\{40\\}' || echo 'none') && "
-        "echo '=== WORKFLOW_PERMISSIONS ===' && "
+        "echo '=== GITHUB_WORKFLOW_PERMISSIONS ===' && "
         "(grep -rn 'permissions:' .github/workflows/ 2>/dev/null || echo 'none') && "
-        "echo '=== SECRETS_IN_RUN_STEPS ===' && "
+        "echo '=== GITHUB_SECRETS_IN_RUN ===' && "
         "(grep -rn -i 'echo.*secrets\\.|echo.*\\$.*TOKEN\\|echo.*\\$.*PASSWORD' .github/workflows/ 2>/dev/null || echo 'none') && "
+        "echo '=== GITHUB_SCRIPT_INJECTION ===' && "
+        "(grep -rn 'github\\.event\\.pull_request\\|github\\.head_ref\\|github\\.event\\.issue' .github/workflows/ 2>/dev/null || echo 'none')"
+    )
+    gitlab_cmd = (
+        f"cd {repo_dir} && "
+        "echo '=== GITLAB_LATEST_IMAGES ===' && "
+        "(grep -rn 'image:.*:latest' .gitlab-ci.yml 2>/dev/null || echo 'none') && "
+        "echo '=== GITLAB_GLOBAL_VARS ===' && "
+        "(grep -B1 -A15 '^variables:' .gitlab-ci.yml 2>/dev/null | grep -i 'PASSWORD\\|SECRET\\|TOKEN\\|API_KEY\\|PRIVATE' || echo 'none') && "
+        "echo '=== GITLAB_EXTERNAL_INCLUDES ===' && "
+        "(grep -n 'include:' .gitlab-ci.yml 2>/dev/null | head -8 || echo 'none')"
+    )
+    circleci_cmd = (
+        f"cd {repo_dir} && "
+        "echo '=== CIRCLECI_ORBS ===' && "
+        "(grep -A25 '^orbs:' .circleci/config.yml 2>/dev/null | head -25 || echo 'none') && "
+        "echo '=== CIRCLECI_VOLATILE ===' && "
+        "(grep -rn '@dev:\\|@volatile\\|@edge' .circleci/ 2>/dev/null || echo 'none') && "
+        "echo '=== CIRCLECI_MACHINE_LATEST ===' && "
+        "(grep -n 'image:.*latest' .circleci/config.yml 2>/dev/null || echo 'none')"
+    )
+    azure_jenkins_cmd = (
+        f"cd {repo_dir} && "
+        "echo '=== AZURE_TASK_VERSIONS ===' && "
+        "(find . -maxdepth 2 \\( -name 'azure-pipelines*.yml' -o -name 'azure-pipelines*.yaml' \\) | "
+        "xargs grep -n 'task:' 2>/dev/null | head -15 || echo 'none') && "
+        "echo '=== JENKINS_RISKS ===' && "
+        "(find . -maxdepth 3 -name 'Jenkinsfile*' | "
+        "xargs grep -n 'agent any\\|agent {\\|withCredentials\\|env\\.' 2>/dev/null | head -10 || echo 'none')"
+    )
+    deps_cmd = (
+        f"cd {repo_dir} && "
         "echo '=== UNPINNED_PYTHON_DEPS ===' && "
         "(grep -rn '^[a-zA-Z]' requirements*.txt 2>/dev/null | grep -v '==' | grep -v '^#' || echo 'none') && "
-        "echo '=== SCRIPT_INJECTION_RISK ===' && "
-        "(grep -rn 'github\\.event\\.pull_request\\|github\\.head_ref\\|github\\.event\\.issue' .github/workflows/ 2>/dev/null || echo 'none') && "
         "echo '=== UNPINNED_NPM_DEPS ===' && "
         "(find . -maxdepth 2 -name 'package.json' ! -path '*/node_modules/*' | "
         "while read f; do echo \"FILE: $f\"; grep -E '\"[^\"]+\": *\"[\\^~]' \"$f\" | head -10; done 2>/dev/null || echo 'none')"
     )
-    return await _run(cmd)
+    parts = await asyncio.gather(
+        _run(github_cmd, max_bytes=3000),
+        _run(gitlab_cmd, max_bytes=2000),
+        _run(circleci_cmd, max_bytes=2000),
+        _run(azure_jenkins_cmd, max_bytes=2000),
+        _run(deps_cmd, max_bytes=2000),
+    )
+    return "\n".join(parts)
 
 
 async def _secret_scan(repo_dir: str) -> str:

@@ -35,5 +35,6 @@ async def argus_scan_results():
     async def auto_approve(self, context):
         return {"approved": True, "feedback": "auto-approved by test"}
 
+    fixture_path = str(FIXTURE.resolve())
     with patch.object(HumanGateNode, "execute", auto_approve):
-        return await harness.run({"repo_url": str(FIXTURE.resolve())})
+        return await harness.run({"repo_url": fixture_path, "clone_url": fixture_path})

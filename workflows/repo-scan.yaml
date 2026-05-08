@@ -91,7 +91,7 @@ adapters:
       if [ -d "{{ repo_url }}" ]; then
         cp -r "{{ repo_url }}" "/tmp/argus-{{ run_id }}" 2>&1 && echo 'CLONE_OK (local copy)';
       else
-        git clone --depth 1 --single-branch "{{ repo_url }}" "/tmp/argus-{{ run_id }}" 2>&1 && echo 'CLONE_OK';
+        git clone --depth 1 --single-branch "{{ clone_url }}" "/tmp/argus-{{ run_id }}" 2>&1 && echo 'CLONE_OK';
       fi
 
   gather_config:
@@ -108,6 +108,18 @@ adapters:
       find /tmp/argus-{{ run_id }} -name '.env*' ! -name '.env' ! -path '*/.git/*' | head -3 | while read f; do head -50 "$f"; done 2>/dev/null || echo 'none';
       echo '=== CI_WORKFLOWS ===';
       find /tmp/argus-{{ run_id }}/.github/workflows \( -name '*.yml' -o -name '*.yaml' \) 2>/dev/null | head -8 | while read f; do echo "--- $f ---"; head -100 "$f"; done || echo 'none';
+      echo '=== GITLAB_CI ===';
+      find /tmp/argus-{{ run_id }} -maxdepth 2 -name '.gitlab-ci.yml' ! -path '*/.git/*' 2>/dev/null | head -2 | while read f; do echo "--- $f ---"; head -120 "$f"; done || echo 'none';
+      echo '=== CIRCLECI ===';
+      find /tmp/argus-{{ run_id }} -name 'config.yml' -path '*/.circleci/*' 2>/dev/null | head -1 | while read f; do echo "--- $f ---"; head -120 "$f"; done || echo 'none';
+      echo '=== JENKINS ===';
+      find /tmp/argus-{{ run_id }} -maxdepth 3 -name 'Jenkinsfile*' ! -path '*/.git/*' 2>/dev/null | head -2 | while read f; do echo "--- $f ---"; head -100 "$f"; done || echo 'none';
+      echo '=== AZURE_PIPELINES ===';
+      find /tmp/argus-{{ run_id }} -maxdepth 2 \( -name 'azure-pipelines*.yml' -o -name 'azure-pipelines*.yaml' \) ! -path '*/.git/*' 2>/dev/null | head -2 | while read f; do echo "--- $f ---"; head -100 "$f"; done || echo 'none';
+      echo '=== BITBUCKET_PIPELINES ===';
+      if [ -f /tmp/argus-{{ run_id }}/bitbucket-pipelines.yml ]; then head -100 /tmp/argus-{{ run_id }}/bitbucket-pipelines.yml; else echo 'none'; fi;
+      echo '=== TRAVIS_CI ===';
+      if [ -f /tmp/argus-{{ run_id }}/.travis.yml ]; then head -80 /tmp/argus-{{ run_id }}/.travis.yml; else echo 'none'; fi;
       echo '=== JAVA_BUILD ===';
       find /tmp/argus-{{ run_id }} \( -name 'pom.xml' -o -name 'build.gradle' -o -name 'build.gradle.kts' -o -name 'settings.gradle' \) ! -path '*/.git/*' ! -path '*/target/*' | head -4 | while read f; do echo "--- $f ---"; head -100 "$f"; done || echo 'none';
       echo '=== SPRING_CONFIG ===';
@@ -121,7 +133,7 @@ adapters:
       echo '=== CARGO_MANIFEST ===';
       find /tmp/argus-{{ run_id }} \( -name 'Cargo.toml' -o -name 'Cargo.lock' \) ! -path '*/.git/*' ! -path '*/target/*' | head -4 | while read f; do echo "--- $f ---"; head -100 "$f"; done || echo 'none';
       echo '=== GO_MANIFEST ===';
-      find /tmp/argus-{{ run_id }} \( -name 'go.mod' -o -name 'go.sum' \) ! -path '*/.git/*' ! -path '*/vendor/*' | head -4 | while read f; do echo "--- $f ---"; head -100 "$f"; done || echo 'none') | head -c 20000
+      find /tmp/argus-{{ run_id }} \( -name 'go.mod' -o -name 'go.sum' \) ! -path '*/.git/*' ! -path '*/vendor/*' | head -4 | while read f; do echo "--- $f ---"; head -100 "$f"; done || echo 'none') | head -c 32000
 
   cleanup:
     name: cleanup
@@ -294,7 +306,7 @@ stages:
         Extract security findings from raw scanner tool output.
         The raw data is in run_scanners in the context. It has 7 keys:
           run_scanners.dependency_scan  — pip-audit + npm-audit output
-          run_scanners.supply_chain_scan — GitHub Actions supply chain checks
+          run_scanners.supply_chain_scan — CI/CD supply chain checks (GitHub Actions, GitLab CI, CircleCI, Jenkins, Azure Pipelines + unpinned deps)
           run_scanners.secret_scan       — gitleaks secret detection JSON
           run_scanners.grype_scan        — grype CVE scan JSON ({} = no manifests found)
           run_scanners.semgrep_scan      — semgrep (JAVA_SEMGREP and RUST_SEMGREP sections)
@@ -334,7 +346,10 @@ stages:
       model_tier: synthesis
       description: |
         You are a security engineer reviewing infrastructure and framework configuration for vulnerabilities.
-        The configuration files to analyze are in gather_config.stdout in the context (sections: DOCKER, COMPOSE, FRAMEWORK_SETTINGS, ENV_TEMPLATES, CI_WORKFLOWS, JAVA_BUILD, SPRING_CONFIG, JAVA_WEB_XML, JS_FRAMEWORK_CONFIG, NPM_PACKAGE_JSON, CARGO_MANIFEST, GO_MANIFEST).
+        The configuration files to analyze are in gather_config.stdout in the context (sections:
+        DOCKER, COMPOSE, FRAMEWORK_SETTINGS, ENV_TEMPLATES, CI_WORKFLOWS, GITLAB_CI, CIRCLECI,
+        JENKINS, AZURE_PIPELINES, BITBUCKET_PIPELINES, TRAVIS_CI,
+        JAVA_BUILD, SPRING_CONFIG, JAVA_WEB_XML, JS_FRAMEWORK_CONFIG, NPM_PACKAGE_JSON, CARGO_MANIFEST, GO_MANIFEST).
         Do NOT use tools or read files.
 
         Check for ALL of the following:
@@ -348,9 +363,31 @@ stages:
         DOCKER SECURITY: running as root (no USER instruction), COPY . . including sensitive files,
         secrets in ENV instructions, latest tag usage, unnecessary exposed ports, --privileged flag.
 
-        CI/CD SECURITY: third-party GitHub Actions not pinned to SHA, excessive workflow permissions
-        (contents: write when not needed), secrets referenced in run: steps that could leak to logs,
-        pull_request_target with checkout of untrusted code.
+        CI/CD SECURITY (GitHub Actions): third-party Actions not pinned to SHA, excessive workflow
+        permissions (contents: write when not needed), secrets referenced in run: steps that could
+        leak to logs, pull_request_target with checkout of untrusted code.
+
+        CI/CD SECURITY (GitLab CI — GITLAB_CI section): base image using :latest tag (no version pin),
+        hardcoded credentials in global variables: block, untrusted external include: URLs not pinned
+        to a SHA, jobs running with allow_failure:true hiding security step failures.
+
+        CI/CD SECURITY (CircleCI — CIRCLECI section): orbs using @dev: or @volatile channels (unstable,
+        can be silently replaced), orbs from unverified publishers, environment variables exposing secrets
+        in plain text, using machine executor with image:latest.
+
+        CI/CD SECURITY (Jenkins — JENKINS section): agent any or agent label broadening execution surface,
+        withCredentials binding sensitive vars to shell env (leak risk in verbose output), unsanitised
+        params.* usage in sh/bat steps (command injection), external shared library without version lock.
+
+        CI/CD SECURITY (Azure Pipelines — AZURE_PIPELINES section): tasks using @latest or floating major
+        version (@0, @1) instead of pinned minor version, serviceConnection granting broad permissions,
+        variables exposed to untrusted PR branches.
+
+        CI/CD SECURITY (Bitbucket Pipelines — BITBUCKET_PIPELINES section): image using :latest,
+        hardcoded credentials in variables: section, deployment environments with unrestricted access.
+
+        CI/CD SECURITY (Travis CI — TRAVIS_CI section): global env containing secrets in plain text,
+        before_install running curl|bash pipe installs (supply chain risk).
 
         ENVIRONMENT: .env.example revealing sensitive variable names, plaintext credentials in
         docker-compose env sections, missing secret management (should use Vault/SSM/Secrets Manager).
@@ -421,7 +458,7 @@ stages:
           SOURCE 1 — aggregate_code_findings               (per-file LLM code analysis, JSON — use .vulnerabilities array)
           SOURCE 2 — config_analysis                       (LLM infrastructure/config analysis, JSON)
           SOURCE 3 — compress_scanners.dependency_findings  (pip-audit + npm-audit findings)
-          SOURCE 4 — compress_scanners.supply_chain_findings (GitHub Actions supply chain findings)
+          SOURCE 4 — compress_scanners.supply_chain_findings (CI/CD supply chain findings: GitHub Actions, GitLab CI, CircleCI, Jenkins, Azure Pipelines, unpinned deps)
           SOURCE 5 — compress_scanners.secret_findings      (gitleaks secret detection findings)
           SOURCE 6 — compress_scanners.cve_findings         (grype CVE scan findings)
           SOURCE 7 — compress_scanners.static_analysis_findings (semgrep + gosec + cppcheck static analysis)

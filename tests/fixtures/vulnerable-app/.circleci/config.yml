@@ -1,0 +1,26 @@
+# Intentionally insecure CircleCI config — Argus test fixture
+
+version: 2.1
+
+orbs:
+  python: circleci/python@dev:alpha  # dev channel orb — unstable, can be replaced silently
+  node: circleci/node@5              # floating major version, not pinned to a specific release
+
+jobs:
+  build-and-test:
+    docker:
+      - image: cimg/python:latest  # unpinned :latest image
+    environment:
+      STRIPE_SECRET_KEY: "sk_live_hardcoded_abc123"  # hardcoded secret
+    steps:
+      - checkout
+      - python/install-packages:
+          pkg-manager: pip
+      - run:
+          name: Run tests
+          command: pytest
+
+workflows:
+  main:
+    jobs:
+      - build-and-test

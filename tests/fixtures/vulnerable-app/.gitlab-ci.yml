@@ -1,0 +1,28 @@
+# Intentionally insecure GitLab CI config — Argus test fixture
+
+image: python:latest  # unpinned :latest tag — supply chain risk
+
+variables:
+  DB_PASSWORD: "hardcoded-db-secret-12345"  # hardcoded credential in global scope
+  INTERNAL_API_KEY: "sk-prod-gitlab-abcdef"
+  APP_ENV: "production"
+
+stages:
+  - test
+  - deploy
+
+test:
+  stage: test
+  script:
+    - pip install -r requirements.txt
+    - pytest
+
+deploy:
+  stage: deploy
+  script:
+    - echo "Deploying to production"
+    - echo "DB_PASSWORD=$DB_PASSWORD"  # secret echoed to log
+  environment:
+    name: production
+  only:
+    - main

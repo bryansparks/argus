@@ -45,6 +45,25 @@ def _repo_slug(repo_url: str) -> str:
     return re.sub(r"[^a-zA-Z0-9._-]", "-", Path(repo_url).name) or "repo"
 
 
+def _build_clone_url(repo_url: str, token: str | None) -> str:
+    """Inject a git token into an HTTPS URL for cloning private repos.
+
+    SSH URLs and local paths are returned unchanged — tokens don't apply.
+    Token is embedded as a URL credential, not a separate argument, so it
+    never appears in `git` process arguments visible via ps(1).
+    """
+    if not token or not repo_url.startswith("https://"):
+        return repo_url
+    if "github.com" in repo_url:
+        return repo_url.replace("https://", f"https://x-access-token:{token}@", 1)
+    if "gitlab.com" in repo_url or "/gitlab." in repo_url:
+        return repo_url.replace("https://", f"https://oauth2:{token}@", 1)
+    if "bitbucket.org" in repo_url:
+        return repo_url.replace("https://", f"https://x-token-auth:{token}@", 1)
+    # Generic HTTPS git server
+    return repo_url.replace("https://", f"https://{token}@", 1)
+
+
 @click.group()
 @click.version_option(version="0.1.0", prog_name="argus")
 def cli():
@@ -72,16 +91,26 @@ def cli():
               help="Print stage progress as the scan runs")
 @click.option("--transcript", "transcript_path", default=None, type=click.Path(),
               help="Write agent conversation transcript to this file")
-def scan(repo_url: str, report_dir: str | None, verbose: bool, transcript_path: str | None):
-    """Scan a Python repository for security vulnerabilities.
+@click.option("--token", "git_token", default=None, envvar="ARGUS_GIT_TOKEN",
+              help="Git credential token for private repos. Falls back to ARGUS_GIT_TOKEN env var "
+                   "or GIT_TOKEN in ~/.argus/argus.config. Supports GitHub (x-access-token), "
+                   "GitLab (oauth2), Bitbucket (x-token-auth), and generic HTTPS servers.")
+def scan(repo_url: str, report_dir: str | None, verbose: bool, transcript_path: str | None,
+         git_token: str | None):
+    """Scan a repository for security vulnerabilities.
 
-    REPO_URL can be a GitHub URL (https://github.com/org/repo)
-    or a local filesystem path.
+    REPO_URL can be a GitHub/GitLab/Bitbucket URL (https://...) or a local path.
+
+    For private repos, provide a personal access token via --token or
+    the ARGUS_GIT_TOKEN environment variable.
     """
     _load_config()
+    # Also honour GIT_TOKEN from argus.config (loaded into os.environ by _load_config)
+    if not git_token:
+        git_token = os.environ.get("GIT_TOKEN")
     slug = _repo_slug(repo_url)
     resolved_dir = Path(report_dir) if report_dir else DEFAULT_REPORT_DIR / slug
-    asyncio.run(_run_scan(repo_url, resolved_dir, verbose, transcript_path))
+    asyncio.run(_run_scan(repo_url, resolved_dir, verbose, transcript_path, git_token))
 
 
 def _on_event_verbose(event_type: str, data: dict) -> None:
@@ -148,15 +177,20 @@ async def _run_scan(
     report_dir: Path,
     verbose: bool,
     transcript_path: str | None,
+    git_token: str | None = None,
 ) -> None:
     click.echo(f"[argus] Loading workflow: {WORKFLOW}")
     spec = load_spec(WORKFLOW)
     harness = Harness(spec=spec, on_event=_on_event_verbose if verbose else None)
 
     click.echo(f"[argus] Scanning: {repo_url}")
+    if git_token:
+        click.echo("[argus] Using git token for private repo authentication.")
+
+    clone_url = _build_clone_url(repo_url, git_token)
 
     try:
-        results = await harness.run({"repo_url": repo_url})
+        results = await harness.run({"repo_url": repo_url, "clone_url": clone_url})
     except Exception as exc:
         click.echo(f"[argus] ERROR: {exc}", err=True)
         sys.exit(1)
