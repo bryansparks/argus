@@ -7,6 +7,9 @@ dependencies = [
     "anyio~=4.0",
     "markdown>=3.5",
     "pygments>=2.15",
+    "pyyaml>=6.0",
+    "litellm>=1.0",
+    "jinja2>=3.1",
 ]
 
 [project.optional-dependencies]

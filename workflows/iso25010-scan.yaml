@@ -1,0 +1,542 @@
+name: iso25010-quality-scan
+version: "1.0"
+description: "Assess a repository against ISO/IEC 25010 software quality characteristics and produce a prioritized improvement report."
+
+model_tiers:
+  tiny:
+    provider: openrouter
+    model: minimax/minimax-m2.5:free
+    api_key_env: OPENROUTER_API_KEY
+    temperature: 0.2
+    max_tokens: 2048
+
+  small:
+    provider: openrouter
+    model: minimax/minimax-m2.5:free
+    api_key_env: OPENROUTER_API_KEY
+    temperature: 0.2
+    max_tokens: 4096
+
+  medium:
+    provider: openrouter
+    model: nvidia/nemotron-3-super-120b-a12b:free
+    api_key_env: OPENROUTER_API_KEY
+    temperature: 0.2
+    max_tokens: 4096
+
+  large:
+    provider: openrouter
+    model: nvidia/nemotron-3-super-120b-a12b:free
+    api_key_env: OPENROUTER_API_KEY
+    temperature: 0.2
+    max_tokens: 8192
+
+  frontier:
+    provider: openrouter
+    model: nvidia/nemotron-3-super-120b-a12b:free
+    api_key_env: OPENROUTER_API_KEY
+    temperature: 0.3
+    max_tokens: 8192
+
+  analysis:
+    provider: openrouter
+    model: nvidia/nemotron-3-super-120b-a12b:free
+    api_key_env: OPENROUTER_API_KEY
+    temperature: 0.2
+    max_tokens: 8192
+
+  synthesis:
+    provider: openrouter
+    model: nvidia/nemotron-3-super-120b-a12b:free
+    api_key_env: OPENROUTER_API_KEY
+    temperature: 0.2
+    max_tokens: 32768
+
+role_type_defaults:
+  worker: small
+  orchestrator: frontier
+  judge: large
+  researcher: large
+
+safety_rules:
+  - tool: shell
+    condition:
+      field: cmd
+      op: matches_regex
+      value: "git\\s+(push|commit|merge|rebase)"
+    action: block
+    message: "Git write operations are not permitted in scan mode"
+  - tool: shell
+    condition:
+      field: cmd
+      op: matches_regex
+      value: "rm\\s+-rf"
+    action: block
+    message: "Destructive rm -rf not permitted"
+
+checkpoint: true
+
+contracts:
+  max_llm_calls: 200
+  inputs:
+    - name: repo_url
+    - name: clone_url
+    - name: run_id
+    - name: _false_positive_memory
+
+memory:
+  enabled: true
+  capture:
+    - stage: validate_findings
+      key: false_positive_ids
+      max_entries: 10
+  inject_as: _false_positive_memory
+
+tools:
+  - module: argus.tools.scanners
+  - module: argus.tools.files
+
+adapters:
+  clone_repo:
+    name: clone_repo
+    type: script
+    timeout: 180
+    cmd: >-
+      if [ -d "{{ repo_url }}" ]; then
+        cp -r "{{ repo_url }}" "/tmp/argus-{{ run_id }}" 2>&1 && echo 'CLONE_OK (local copy)';
+      else
+        git clone --depth 1 --single-branch "{{ clone_url }}" "/tmp/argus-{{ run_id }}" 2>&1 && echo 'CLONE_OK';
+      fi
+
+  cleanup:
+    name: cleanup
+    type: script
+    cmd: >-
+      python3 -c "
+      import shutil
+      shutil.rmtree('/tmp/argus-{{ run_id }}', ignore_errors=True)
+      " && echo 'cleanup done'
+
+stages:
+  - id: clone_repo
+    adapter: clone_repo
+    on_fail:
+      loop:
+        stage: clone_repo
+        max: 2
+
+  - id: list_source_files
+    tool_call:
+      name: list_source_files
+      args:
+        repo_dir: /tmp/argus-{{ run_id }}
+    depends_on: [clone_repo]
+
+  - id: triage_files
+    depends_on: [list_source_files]
+    skip_if: "{{ list_source_files.total_count <= 60 }}"
+    signature:
+      input:
+        list_source_files: File manifest with compact_manifest (newline-separated relative paths, pre-sorted by relevance), repo_dir (absolute path to the cloned repo root), and total_count
+    role:
+      name: triage_analyst
+      type: worker
+      model_tier: analysis
+      description: |
+        You are a software quality analyst. A repository has {{ list_source_files.total_count }} source files.
+        Your job is to select the 60 files most likely to contain ISO 25010 quality issues.
+
+        The file list is in list_source_files.compact_manifest in the context — one relative path per line.
+        {% if list_source_files.compact_manifest_truncated %}
+        NOTE: The manifest was truncated at 3000 entries.
+        {% endif %}
+
+        The repository root is: {{ list_source_files.repo_dir }}
+
+        Return ABSOLUTE paths by prepending the repo_dir to each selected relative path,
+        separated by "/" (e.g. "{{ list_source_files.repo_dir }}/hermes_cli/main.py").
+
+        Prioritize files with these characteristics:
+        - Core business logic and domain model files (complex computations, data transformations)
+        - Service, manager, controller, and handler classes (high responsibility surface)
+        - Utility and helper modules used widely across the codebase
+        - Data access and ORM layers (reliability and performance hotspots)
+        - Files with names suggesting complexity: processor, engine, pipeline, workflow, calculator
+        - API entry points (functional completeness, usability)
+        - Configuration loaders (portability, maintainability)
+
+        Deprioritize auto-generated code, migration scripts, static assets, and locale files.
+
+        Return up to 60 files.
+
+        IMPORTANT: You MUST return a JSON object with exactly two keys: "selected_files" (array of
+        absolute path strings) and "rationale" (a string). Do NOT return a bare array. Do NOT use
+        any other key name (not "files", not "paths", not "file_list" — only "selected_files").
+    output_mode: guided_json
+    output_schema:
+      type: object
+      required: [selected_files, rationale]
+      properties:
+        selected_files:
+          type: array
+          items: {type: string}
+        rationale: {type: string}
+    on_fail:
+      loop:
+        stage: triage_files
+        max: 2
+
+  - id: run_iso_scanners
+    tool_call:
+      name: run_iso_scanners
+      args:
+        repo_dir: /tmp/argus-{{ run_id }}
+    depends_on: [clone_repo]
+
+  - id: analyze_file
+    depends_on: [triage_files]
+    fan_out: 20
+    partition_source: "{{ triage_files.selected_files if not triage_files._skipped else list_source_files.file_paths }}"
+    partition_key: file_path
+    inject_file_as: file_content
+    signature:
+      input:
+        file_path: Absolute path to the source file being analyzed
+        file_content: Full text content of the source file
+    role:
+      name: quality_analyst
+      type: worker
+      model_tier: analysis
+      description: |
+        You are a software quality reviewer applying ISO/IEC 25010. Analyze the source file for
+        quality characteristic violations. The file is: {{ file_path }}
+        The full file content is in file_content in the context.
+
+        Infer the language from the file extension. For each finding provide: type (a short
+        snake_case identifier), characteristic, sub_characteristic, severity (high/medium/low),
+        approximate line number, short title, one-sentence description, and a concrete recommendation.
+
+        SEVERITY GUIDE:
+        - high: actively harmful — resource leak, swallowed exception in critical path,
+          function CCN > 15, class > 400 lines with single responsibility violation
+        - medium: notable gap — CCN 8-15, missing error propagation, N+1 query risk,
+          hardcoded environment assumption, missing input validation, function > 40 lines
+        - low: improvement opportunity — inconsistent naming, long parameter list (> 4 params),
+          minor duplication, missing type annotation on public API, magic values,
+          function > 25 lines, any bare except, missing docstring on public function
+
+        MAINTAINABILITY — Modularity, Reusability, Analyzability, Modifiability, Testability:
+        - Functions with cyclomatic complexity > 10 (count if/elif/else/for/while/and/or/case branches)
+        - Functions longer than 50 lines
+        - Classes longer than 300 lines with too many responsibilities (god class)
+        - Deep nesting (> 4 indentation levels)
+        - Hardcoded magic values / magic strings that should be named constants
+        - Global mutable state that makes testing impossible
+        - Functions that are impossible to unit test without live external services (no injection point)
+        - Significant duplicate logic blocks (> 5 lines repeated)
+
+        RELIABILITY — Fault Tolerance, Recoverability, Maturity:
+        - Bare except / catch-all exception handlers that swallow errors silently
+        - Missing error handling on file I/O, network calls, or database operations
+        - Unreachable code after return/raise
+        - Potential null/None dereference without guard
+        - No retry or fallback logic for external calls that may fail transiently
+        - Missing transaction rollback on multi-step write sequences
+
+        PERFORMANCE EFFICIENCY — Time Behavior, Resource Utilization:
+        - N+1 query patterns: loop containing a database query or lazy ORM relationship load
+        - Synchronous blocking I/O in an async function (missing await, or using requests in asyncio)
+        - Unbounded in-memory accumulation (appending to list inside large loop without cap)
+        - Unclosed file handles or database connections (missing context manager or explicit close)
+        - Repeated expensive computation in a loop that could be hoisted
+
+        PORTABILITY — Adaptability:
+        - Hardcoded absolute filesystem paths (e.g., /home/user/..., C:\\Users\\...)
+        - OS-specific API calls without platform guard
+        - Hardcoded timezone assumptions (datetime.now() instead of datetime.now(tz=...))
+        - Hardcoded locale or encoding assumptions
+
+        FUNCTIONAL SUITABILITY — Functional Correctness, Completeness:
+        - Missing bounds/range validation on numeric inputs from external sources
+        - Off-by-one risks in index arithmetic on user-controlled sizes
+        - Float equality comparison (== on floats)
+        - Missing required field validation before use
+
+        USABILITY — Operability (API ergonomics for library/service code):
+        - Public function with 6+ positional parameters (should use named params or a config object)
+        - Inconsistent error return shapes (some paths return None, others raise, others return False)
+        - Undocumented required parameters with non-obvious constraints
+
+        COMPATIBILITY — Co-existence:
+        - Mutating shared mutable default arguments (Python: def f(x=[]))
+        - Overriding built-in names (list, dict, id, type, etc.)
+
+        OUTPUT INSTRUCTIONS — READ CAREFULLY:
+        You MUST return a JSON object (not a bare array) with exactly these keys:
+          - "file_path": string — copy from file_path in context
+          - "language": string — infer from extension (e.g. "Python", "TypeScript")
+          - "vulnerabilities": array — list of finding objects
+
+        Each finding object MUST have ALL of these keys:
+          - "type": snake_case identifier (e.g. "long_function", "missing_error_handling")
+          - "characteristic": one of: maintainability, reliability, performance_efficiency, portability, functional_suitability, usability, compatibility
+          - "sub_characteristic": specific sub-characteristic name
+          - "severity": exactly one of: "high", "medium", "low"
+          - "line_approx": integer line number (approximate is fine)
+          - "title": short descriptive title (< 80 chars)
+          - "description": one sentence explaining the problem
+          - "recommendation": one sentence on how to fix it
+
+        MANDATORY: The "vulnerabilities" array MUST contain at least 3 items for any
+        non-trivial file (> 10 lines with real logic). Real code always has room for
+        improvement. If you cannot find 3 real issues, lower your severity threshold
+        to "low" and flag documentation gaps, long parameters, missing type hints,
+        magic strings, or any deviation from best practices. A senior engineer doing
+        a careful code review would always find something to note.
+
+        Example of a valid response:
+        {
+          "file_path": "/tmp/argus-abc/src/main.py",
+          "language": "Python",
+          "vulnerabilities": [
+            {
+              "type": "missing_type_annotations",
+              "characteristic": "maintainability",
+              "sub_characteristic": "analyzability",
+              "severity": "low",
+              "line_approx": 1,
+              "title": "Missing type annotations on public functions",
+              "description": "Public functions lack type annotations, making the API harder to understand and use.",
+              "recommendation": "Add PEP 484 type annotations to all public function signatures."
+            }
+          ]
+        }
+    output_mode: json
+
+  - id: aggregate_code_findings
+    tool_call:
+      name: aggregate_findings
+      args:
+        per_file_results: "{{ analyze_file }}"
+        max_findings: 120
+    depends_on: [analyze_file]
+
+  - id: compress_iso_scanners
+    depends_on: [run_iso_scanners]
+    tool_call:
+      name: compress_iso_scanners
+      args:
+        run_iso_scanners: "{{ run_iso_scanners }}"
+
+  - id: synthesize_findings
+    depends_on: [aggregate_code_findings, compress_iso_scanners]
+    signature:
+      input:
+        run_id: Scan run identifier
+        aggregate_code_findings: Deduplicated per-file quality findings from LLM code review
+        compress_iso_scanners: Structured complexity findings from lizard scanner
+    role:
+      name: synthesizer
+      type: orchestrator
+      model_tier: synthesis
+      description: |
+        You are a software quality analyst synthesizing findings from two sources into one
+        unified, deduplicated finding list for the ISO/IEC 25010 quality assessment report.
+
+        SOURCE 1 — LLM code review (aggregate_code_findings.vulnerabilities):
+          Per-file quality findings covering all 8 ISO 25010 characteristics.
+          {% if aggregate_code_findings.truncation_note %}
+          NOTE: {{ aggregate_code_findings.truncation_note }}
+          {% endif %}
+
+        SOURCE 2 — Complexity scanner (compress_iso_scanners.findings):
+          Lizard-detected high-complexity and long functions.
+
+        DEDUPLICATION RULES:
+        - If source 1 and source 2 both flag the same function for high complexity,
+          keep the source 2 entry (it has exact CCN metric) and discard the source 1 duplicate.
+        - Same rule for the same function flagged for length.
+        - Otherwise keep all findings.
+
+        For each finding in the unified list assign a unique ID: Q001, Q002, ...
+        Populate characteristic and sub_characteristic from the source finding.
+
+        Count findings by characteristic and by severity. Every finding must appear
+        in exactly one of the by_characteristic buckets and one by_severity bucket.
+
+        OUTPUT INSTRUCTIONS — READ CAREFULLY:
+        Return a JSON object with exactly these keys:
+          - "findings": array of finding objects
+          - "total_count": integer — number of findings in the array
+          - "by_characteristic": object with integer counts per characteristic
+          - "by_severity": object with integer counts for "high", "medium", "low"
+
+        Each finding object MUST have ALL of these keys:
+          - "id": string like "Q001", "Q002", ...
+          - "source": "code_analysis" or "complexity_scanner"
+          - "characteristic": one of: maintainability, reliability, performance_efficiency,
+            portability, functional_suitability, usability, compatibility
+          - "sub_characteristic": specific sub-characteristic name
+          - "severity": exactly "high", "medium", or "low"
+          - "file": file path string (from the source finding)
+          - "line_approx": integer line number
+          - "title": short title (< 80 chars)
+          - "description": one sentence explaining the issue
+          - "recommendation": one sentence on how to fix it
+
+        MANDATORY: Include ALL findings from aggregate_code_findings.vulnerabilities
+        and compress_iso_scanners.findings (after deduplication). If the input sources
+        have findings, the "findings" array MUST be non-empty. Only return an empty
+        array if BOTH input sources contain zero items.
+
+        Example response shape:
+        {
+          "findings": [
+            {
+              "id": "Q001",
+              "source": "code_analysis",
+              "characteristic": "maintainability",
+              "sub_characteristic": "analyzability",
+              "severity": "medium",
+              "file": "/tmp/argus-abc/src/agent.py",
+              "line_approx": 42,
+              "title": "Function exceeds 50 lines",
+              "description": "The parse_response function is 87 lines long, reducing readability.",
+              "recommendation": "Break parse_response into smaller focused helper functions."
+            }
+          ],
+          "total_count": 1,
+          "by_characteristic": {"maintainability": 1, "reliability": 0, "performance_efficiency": 0,
+            "portability": 0, "functional_suitability": 0, "usability": 0, "compatibility": 0},
+          "by_severity": {"high": 0, "medium": 1, "low": 0}
+        }
+    output_mode: json
+    on_fail:
+      loop:
+        stage: synthesize_findings
+        max: 2
+
+  - id: normalize_synthesize
+    tool_call:
+      name: normalize_synthesize_output
+      args:
+        synthesize_findings: "{{ synthesize_findings }}"
+        aggregate_code_findings: "{{ aggregate_code_findings }}"
+        compress_iso_scanners: "{{ compress_iso_scanners }}"
+    depends_on: [synthesize_findings]
+
+  - id: prioritize_tasks
+    depends_on: [normalize_synthesize]
+    signature:
+      input:
+        run_id: Scan run identifier
+        normalize_synthesize: Unified deduplicated quality findings list to prioritize
+    role:
+      name: prioritizer
+      type: orchestrator
+      model_tier: analysis
+      description: |
+        You are a software engineering lead creating a prioritized improvement plan.
+        The unified findings list is in normalize_synthesize in the context.
+
+        Rank all findings by:
+        1. Severity (high before medium before low)
+        2. Impact breadth — issues in widely-used utilities or public APIs rank higher
+           than issues in rarely-called code paths
+        3. Ease of fix (low effort fixes rank above same-severity high-effort fixes)
+
+        Assign effort: low (< 1 hour), medium (1-4 hours), high (> 4 hours).
+        High-complexity refactors are typically high effort; renaming constants is low effort.
+
+        The highest-priority item should be most impactful AND relatively easy to fix.
+
+        OUTPUT INSTRUCTIONS — READ CAREFULLY:
+        Return a JSON object with exactly one key: "tasks" — an array of task objects.
+        Each task object MUST have ALL of these keys:
+          - "priority": integer starting at 1
+          - "finding_id": string like "Q001", "Q002", ... matching a finding ID from synthesize_findings
+          - "title": short title (< 80 chars)
+          - "severity": exactly "high", "medium", or "low"
+          - "characteristic": one of the ISO 25010 characteristics
+          - "effort": exactly "low", "medium", or "high"
+          - "rationale": one sentence explaining why this ranks here
+
+        MANDATORY: The "tasks" array MUST contain one entry for EVERY finding in
+        normalize_synthesize.findings. If normalize_synthesize has N findings, return N tasks.
+        Do NOT return an empty array.
+
+        Example response:
+        {
+          "tasks": [
+            {
+              "priority": 1,
+              "finding_id": "Q001",
+              "title": "High Cyclomatic Complexity in parse_response",
+              "severity": "high",
+              "characteristic": "maintainability",
+              "effort": "medium",
+              "rationale": "High complexity is the most impactful issue and breaking it up is straightforward."
+            }
+          ]
+        }
+    output_mode: json
+    on_fail:
+      loop:
+        stage: prioritize_tasks
+        max: 3
+
+  - id: validate_findings
+    depends_on: [prioritize_tasks]
+    signature:
+      input:
+        run_id: Scan run identifier
+        prioritize_tasks: Prioritized improvement task list to validate
+        normalize_synthesize: Normalized findings for cross-reference
+        _false_positive_memory: False positive patterns identified in prior scans (rolling history)
+    role:
+      name: validator
+      type: judge
+      model_tier: synthesis
+      description: |
+        You are a senior software engineer performing a final review before this report is shown to a human.
+
+        Review the prioritized quality findings and check for:
+        - False positives: test code or generated code flagged for high complexity is usually OK;
+          intentionally long switch/match statements may be unavoidable; builder pattern classes
+          with many methods are not god classes.
+        - Misclassified severity: flag any finding rated too high or too low.
+        - Priority ordering errors.
+
+        Prior false positive patterns are in _false_positive_memory (soft signal only).
+
+        If there are no significant issues, set accept=true with confidence >= 0.8.
+        If false positives are found, list them by finding_id.
+    output_mode: guided_json
+    output_schema:
+      type: object
+      required: [accept, confidence, false_positive_ids, notes, feedback]
+      properties:
+        accept:             { type: boolean }
+        confidence:         { type: number }
+        false_positive_ids: { type: array, items: { type: string } }
+        notes:              { type: string }
+        feedback:           { type: string }
+    on_fail:
+      loop:
+        stage: validate_findings
+        max: 2
+
+  - id: generate_report
+    depends_on: [validate_findings]
+    tool_call:
+      name: generate_markdown_report
+      args:
+        run_id: "{{ run_id }}"
+        repo_url: "{{ repo_url }}"
+        normalize_synthesize: "{{ normalize_synthesize }}"
+        validate_findings: "{{ validate_findings }}"
+        prioritize_tasks: "{{ prioritize_tasks }}"
+
+  - id: cleanup
+    adapter: cleanup
+    depends_on: [generate_report]

@@ -5,39 +5,43 @@ description: "Scan a GitHub repository (Python, JS/TS, Java, Rust, Go) for secur
 model_tiers:
   tiny:
     provider: openrouter
-    model: nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free
+    model: minimax/minimax-m2.5:free
     api_key_env: OPENROUTER_API_KEY
     temperature: 0.2
     max_tokens: 2048
 
   small:
-    provider: ollama
-    model: gemma4:31b-cloud
-    api_base: https://api.ollama.com
-    api_key_env: OLLAMA_API_KEY
+    provider: openrouter
+    model: minimax/minimax-m2.5:free
+    api_key_env: OPENROUTER_API_KEY
+    temperature: 0.2
+    max_tokens: 4096
 
   medium:
-    provider: ollama
-    model: gemma4:31b-cloud
-    api_base: https://api.ollama.com
-    api_key_env: OLLAMA_API_KEY
+    provider: openrouter
+    model: nvidia/nemotron-3-super-120b-a12b:free
+    api_key_env: OPENROUTER_API_KEY
+    temperature: 0.2
+    max_tokens: 4096
 
   large:
-    provider: ollama
-    model: kimi-k2.6:cloud
-    api_base: https://api.ollama.com
-    api_key_env: OLLAMA_API_KEY
+    provider: openrouter
+    model: nvidia/nemotron-3-super-120b-a12b:free
+    api_key_env: OPENROUTER_API_KEY
+    temperature: 0.2
+    max_tokens: 8192
 
   frontier:
-    provider: ollama
-    model: glm-5.1:cloud
-    api_base: https://api.ollama.com
-    api_key_env: OLLAMA_API_KEY
+    provider: openrouter
+    model: nvidia/nemotron-3-super-120b-a12b:free
+    api_key_env: OPENROUTER_API_KEY
+    temperature: 0.3
+    max_tokens: 8192
 
   synthesis:
-    provider: anthropic
-    model: claude-3-5-haiku-20241022
-    api_key_env: ANTHROPIC_API_KEY
+    provider: openrouter
+    model: nvidia/nemotron-3-super-120b-a12b:free
+    api_key_env: OPENROUTER_API_KEY
     temperature: 0.2
     max_tokens: 8192
 
@@ -69,6 +73,13 @@ safety_rules:
       value: "gh issue"
     action: block
     message: "Issue creation must be done outside the scan workflow"
+
+contracts:
+  inputs:
+    - name: repo_url
+    - name: clone_url
+    - name: run_id
+    - name: _false_positive_memory
 
 memory:
   enabled: true
@@ -166,7 +177,7 @@ stages:
     skip_if: "{{ list_source_files.total_count <= 60 }}"
     signature:
       input:
-        list_source_files: File manifest with compact_manifest (newline-separated relative paths, security-sorted), file_paths (absolute), and total_count
+        list_source_files: File manifest with compact_manifest (newline-separated relative paths, security-sorted), repo_dir (absolute path to the cloned repo root), and total_count
     role:
       name: triage_analyst
       type: worker
@@ -182,9 +193,10 @@ stages:
         before truncation, so the most important files appear at the top.
         {% endif %}
 
-        To return selected files you need ABSOLUTE paths. The absolute paths are in
-        list_source_files.file_paths — match relative paths from compact_manifest to their
-        absolute counterparts (replace the repo root prefix).
+        The repository root is: {{ list_source_files.repo_dir }}
+
+        Return ABSOLUTE paths by prepending the repo_dir to each selected relative path,
+        separated by "/" (e.g. "{{ list_source_files.repo_dir }}/src/auth.py").
 
         Prioritize files with these characteristics:
         - Name contains: auth, login, token, api, router, handler, upload, exec, admin, user, session, password, key, secret, crypto, db, database, query, sql, request, response, middleware, permission, role

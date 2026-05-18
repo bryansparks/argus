@@ -1,7 +1,13 @@
 import os
+import sys
 import shutil
 import pytest
 from pathlib import Path
+
+# Ensure the project root is on sys.path so tests run without package installation
+_project_root = Path(__file__).parent.parent
+if str(_project_root) not in sys.path:
+    sys.path.insert(0, str(_project_root))
 
 pytest_plugins = ("anyio",)
 

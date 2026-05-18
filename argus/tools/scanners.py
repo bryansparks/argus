@@ -235,6 +235,28 @@ async def _cppcheck_scan(repo_dir: str) -> str:
     ) or "none"
 
 
+# ── ISO 25010 quality scanners ────────────────────────────────────────────────
+
+async def _lizard_scan(repo_dir: str) -> str:
+    """Run lizard and return only functions exceeding complexity or length thresholds."""
+    import shutil
+    if not shutil.which("lizard"):
+        return "lizard_not_installed — install with: pip install lizard"
+    return await _run(
+        f"lizard {repo_dir} -C 10 -L 60 -w 2>/dev/null",
+        timeout=120,
+        max_bytes=6000,
+    ) or "no high-complexity functions found"
+
+
+async def _handle_run_iso_scanners(args: dict) -> dict:
+    repo_dir = args.get("repo_dir", "")
+    if not repo_dir or not Path(repo_dir).exists():
+        return {"error": f"repo_dir not found: {repo_dir}"}
+    complexity = await _lizard_scan(repo_dir)
+    return {"complexity_scan": complexity}
+
+
 # ── composite tool handler ────────────────────────────────────────────────────
 
 async def _handle_run_all_scanners(args: dict) -> dict:
@@ -282,6 +304,22 @@ def register(registry: ToolRegistry) -> None:
         ),
         permission=PermissionLevel.READ_ONLY,
         handler=_handle_run_all_scanners,
+        parameters={
+            "repo_dir": {
+                "type": "string",
+                "description": "Absolute path to the cloned repository directory",
+            }
+        },
+    ))
+    registry.register(ToolDescriptor(
+        name="run_iso_scanners",
+        description=(
+            "Run ISO 25010 quality metric tools against a cloned repository: "
+            "lizard (cyclomatic complexity and function length — flags CCN > 10 or length > 60 lines). "
+            "Returns: complexity_scan (lizard warning output, or 'lizard_not_installed' if unavailable)."
+        ),
+        permission=PermissionLevel.READ_ONLY,
+        handler=_handle_run_iso_scanners,
         parameters={
             "repo_dir": {
                 "type": "string",

@@ -15,16 +15,37 @@ from armature.runtime.engine import Harness
 from armature.spec.loader import load_spec
 from argus.report_html import write_html_report
 
-WORKFLOW = Path(__file__).parent.parent / "workflows" / "repo-scan.yaml"
+_WORKFLOWS: dict[str, Path] = {
+    "security": Path(__file__).parent.parent / "workflows" / "repo-scan.yaml",
+    "iso25010": Path(__file__).parent.parent / "workflows" / "iso25010-scan.yaml",
+}
+WORKFLOW = _WORKFLOWS["security"]  # kept for model-config-test backward compat
 DEFAULT_REPORT_DIR = Path.home() / "argus-reports"
 CONFIG_FILE = Path.home() / ".argus" / "argus.config"
 
 
 def _load_config() -> None:
-    """Load ~/.argus/argus.config into environment variables (key=value format)."""
+    """Load env vars from .env (CWD) and ~/.argus/argus.config (key=value format).
+
+    .env in the current working directory is checked first so project-local
+    overrides take precedence over the user-global config file.
+    """
+    # Load .env from current working directory if present
+    cwd_env = Path.cwd() / ".env"
+    if cwd_env.exists():
+        try:
+            from dotenv import load_dotenv
+            load_dotenv(cwd_env, override=False)
+        except ImportError:
+            _parse_env_file(cwd_env)
+
     if not CONFIG_FILE.exists():
         return
-    for line in CONFIG_FILE.read_text().splitlines():
+    _parse_env_file(CONFIG_FILE)
+
+
+def _parse_env_file(path: Path) -> None:
+    for line in path.read_text().splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
@@ -95,8 +116,12 @@ def cli():
               help="Git credential token for private repos. Falls back to ARGUS_GIT_TOKEN env var "
                    "or GIT_TOKEN in ~/.argus/argus.config. Supports GitHub (x-access-token), "
                    "GitLab (oauth2), Bitbucket (x-token-auth), and generic HTTPS servers.")
+@click.option("--profile", default="security",
+              type=click.Choice(["security", "iso25010"], case_sensitive=False),
+              help="Scan profile: 'security' (default) for vulnerability scanning, "
+                   "'iso25010' for ISO/IEC 25010 software quality assessment.")
 def scan(repo_url: str, report_dir: str | None, verbose: bool, transcript_path: str | None,
-         git_token: str | None):
+         git_token: str | None, profile: str):
     """Scan a repository for security vulnerabilities.
 
     REPO_URL can be a GitHub/GitLab/Bitbucket URL (https://...) or a local path.
@@ -110,7 +135,8 @@ def scan(repo_url: str, report_dir: str | None, verbose: bool, transcript_path: 
         git_token = os.environ.get("GIT_TOKEN")
     slug = _repo_slug(repo_url)
     resolved_dir = Path(report_dir) if report_dir else DEFAULT_REPORT_DIR / slug
-    asyncio.run(_run_scan(repo_url, resolved_dir, verbose, transcript_path, git_token))
+    workflow_path = _WORKFLOWS[profile.lower()]
+    asyncio.run(_run_scan(repo_url, resolved_dir, verbose, transcript_path, git_token, workflow_path))
 
 
 def _on_event_verbose(event_type: str, data: dict) -> None:
@@ -178,9 +204,11 @@ async def _run_scan(
     verbose: bool,
     transcript_path: str | None,
     git_token: str | None = None,
+    workflow_path: Path | None = None,
 ) -> None:
-    click.echo(f"[argus] Loading workflow: {WORKFLOW}")
-    spec = load_spec(WORKFLOW)
+    wf = workflow_path or WORKFLOW
+    click.echo(f"[argus] Loading workflow: {wf}")
+    spec = load_spec(wf)
     harness = Harness(spec=spec, on_event=_on_event_verbose if verbose else None)
 
     click.echo(f"[argus] Scanning: {repo_url}")
