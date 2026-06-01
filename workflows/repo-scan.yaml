@@ -51,7 +51,79 @@ role_type_defaults:
   judge: large
   researcher: large
 
+contracts:
+  inputs:
+    - name: repo_url
+    - name: clone_url
+    - name: run_id
+    - name: _false_positive_memory
+    - name: _stale_memory_keys
+
+checkpoint: true
+
+memory:
+  enabled: true
+  capture:
+    - stage: validate_findings
+      key: false_positive_ids
+      max_entries: 10
+  inject_as: _false_positive_memory
+  staleness_threshold_days: 14
+
+safety_mode: strict
+
 safety_rules:
+  # Explicit allow rules for all tools used in this workflow
+  - tool: list_source_files
+    condition:
+      field: repo_dir
+      op: truthy
+      value: ""
+    action: allow
+    message: "Source file enumeration allowed"
+  - tool: read_file
+    condition:
+      field: path
+      op: truthy
+      value: ""
+    action: allow
+    message: "File read allowed"
+  - tool: aggregate_findings
+    condition:
+      field: per_file_results
+      op: truthy
+      value: ""
+    action: allow
+    message: "Finding aggregation allowed"
+  - tool: run_all_scanners
+    condition:
+      field: repo_dir
+      op: truthy
+      value: ""
+    action: allow
+    message: "Security scanner suite allowed"
+  - tool: normalize_synthesize_output
+    condition:
+      field: synthesize_findings
+      op: truthy
+      value: ""
+    action: allow
+    message: "Output normalization allowed"
+  - tool: compress_iso_scanners
+    condition:
+      field: run_iso_scanners
+      op: truthy
+      value: ""
+    action: allow
+    message: "ISO scanner compression allowed"
+  - tool: generate_markdown_report
+    condition:
+      field: run_id
+      op: truthy
+      value: ""
+    action: allow
+    message: "Report generation allowed"
+  # Block rules for destructive operations
   - tool: shell
     condition:
       field: cmd
@@ -73,21 +145,7 @@ safety_rules:
       value: "gh issue"
     action: block
     message: "Issue creation must be done outside the scan workflow"
-
-contracts:
-  inputs:
-    - name: repo_url
-    - name: clone_url
-    - name: run_id
-    - name: _false_positive_memory
-
-memory:
-  enabled: true
-  capture:
-    - stage: validate_findings
-      key: false_positive_ids
-      max_entries: 10
-  inject_as: _false_positive_memory
+  # Note: safety_mode: strict blocks any tool not explicitly allowed above (fail-closed)
 
 tools:
   - module: argus.tools.scanners
@@ -175,6 +233,7 @@ stages:
   - id: triage_files
     depends_on: [list_source_files]
     skip_if: "{{ list_source_files.total_count <= 60 }}"
+    fail_as_value: true
     signature:
       input:
         list_source_files: File manifest with compact_manifest (newline-separated relative paths, security-sorted), repo_dir (absolute path to the cloned repo root), and total_count
@@ -581,6 +640,7 @@ stages:
         prioritize_tasks: Prioritized remediation task list to validate
         synthesize_findings: Original findings for cross-reference
         _false_positive_memory: False positive patterns identified in prior scans (rolling history)
+        _stale_memory_keys: Stale memory warnings (if any)
     role:
       name: validator
       type: judge
@@ -596,6 +656,11 @@ stages:
         The prioritized tasks are in prioritize_tasks in the context.
         The original findings are in synthesize_findings in the context.
         Prior false positive patterns are in _false_positive_memory (use as soft signal — not a blocklist).
+
+        {% if _stale_memory_keys %}
+        WARNING: The following memory entries may be outdated: {{ _stale_memory_keys | join(", ") }}
+        Weight these older false positive patterns lower in your analysis.
+        {% endif %}
 
         If there are no significant issues, set accept=true with confidence >= 0.8.
         If false positives are found, list them by finding_id.
@@ -792,3 +857,50 @@ stages:
   - id: cleanup
     adapter: cleanup
     depends_on: [generate_report]
+
+  # Post-run self-analysis: reviews the completed run transcript and suggests improvements
+  - id: self_analyst
+    post_run: true
+    role:
+      name: Self-Analyst
+      type: judge
+      model_tier: frontier
+      description: |
+        You are reviewing a completed Argus security scan run to identify quality improvements.
+
+        The full run transcript is available in _transcript in the context.
+        Run diagnostics (failure signatures, error types) are in _diagnostics in the context.
+
+        Your task:
+        1. Review each LLM stage's output quality from the transcript
+        2. Identify stages that produced weak, vague, or potentially incorrect output
+        3. Check for patterns: repeated retries, escalation to higher tiers, schema validation failures
+        4. Suggest concrete spec improvements for the next run
+
+        Focus on:
+        - Stages where the model seemed to struggle (long thinking, multiple attempts)
+        - Findings that may be false positives (vague descriptions, missing code snippets)
+        - Security scanner output that was not fully utilized
+        - Prompt sections that could be more specific or actionable
+
+        Return a JSON object with:
+        - "issues": array of strings describing quality issues found
+        - "suggestions": array of concrete spec improvement recommendations
+        - "confidence": 0.0-1.0 score for how confident you are in this analysis
+        - "stages_flagged": list of stage ids that need attention
+    output_mode: guided_json
+    output_schema:
+      type: object
+      required: [issues, suggestions, confidence, stages_flagged]
+      properties:
+        issues:
+          type: array
+          items: { type: string }
+        suggestions:
+          type: array
+          items: { type: string }
+        confidence: { type: number, minimum: 0.0, maximum: 1.0 }
+        stages_flagged:
+          type: array
+          items: { type: string }
+    depends_on: []
