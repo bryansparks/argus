@@ -1,7 +1,37 @@
 [project]
 name = "argus"
 version = "0.1.0"
+description = "Automated security and quality scanning for code repositories, powered by agentic AI"
+readme = "README.md"
+license = { text = "MIT" }
 requires-python = ">=3.11"
+authors = [
+    { name = "Bryan Sparks", email = "bryan.sparks@gmail.com" },
+]
+keywords = [
+    "security",
+    "scanning",
+    "code-review",
+    "vulnerability-detection",
+    "static-analysis",
+    "ai",
+    "llm",
+    "armature",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Software Development :: Testing",
+]
 dependencies = [
     "click~=8.1",
     "anyio~=4.0",
@@ -10,13 +40,21 @@ dependencies = [
     "pyyaml>=6.0",
     "litellm>=1.0",
     "jinja2>=3.1",
+    "armature>=0.1.0",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=7.4",
     "anyio[trio]>=4.0",
+    "ruff>=0.1.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/bryansparks/argus"
+Repository = "https://github.com/bryansparks/argus"
+Documentation = "https://github.com/bryansparks/argus#readme"
+Issues = "https://github.com/bryansparks/argus/issues"
 
 [project.scripts]
 argus = "argus.cli:cli"
@@ -28,3 +66,11 @@ build-backend = "hatchling.build"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 anyio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "C4"]
+ignore = ["E501"]
