@@ -1,5 +1,9 @@
 # Argus
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
+
 **Automated security and quality scanning for code repositories, powered by agentic AI.**
 
 Argus scans a GitHub repository or local codebase and produces a prioritized, actionable report of security vulnerabilities and software quality issues. Built on the [Armature](https://github.com/bryansparks/armature) agentic workflow harness, Argus combines industry-standard security tools with LLM-based code review to find issues that rule-based tools miss.
