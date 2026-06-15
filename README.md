@@ -171,6 +171,8 @@ pip install armature-argus
 
 This pulls in the `armature-agents` runtime and bundled workflow specs automatically, and makes the `argus` command available on your PATH.
 
+> **Built on Armature:** Argus runs on the [Armature](https://github.com/bryansparks/armature) agentic harness (`armature-agents`). You don't need to install it separately — `pip` resolves it automatically as a dependency, along with the bundled `repo-scan` and `iso25010-scan` workflow specs that define the scan pipeline.
+
 ### From source (for development)
 
 Only needed if you want to modify Argus itself:
