@@ -15,14 +15,14 @@ model_tiers:
     model: qwen/qwen3.5-397b-a17b
     api_key_env: OPENROUTER_API_KEY
     temperature: 0.2
-    max_tokens: 8192
+    max_tokens: 4096
 
   judge:
     provider: openrouter
     model: qwen/qwen3.5-397b-a17b
     api_key_env: OPENROUTER_API_KEY
     temperature: 0.2
-    max_tokens: 8192
+    max_tokens: 4096
 
 role_type_defaults:
   worker: default
@@ -37,6 +37,7 @@ contracts:
     - name: run_id
     - name: _false_positive_memory
     - name: _stale_memory_keys
+  output_max_chars: 4000  # Truncate each stage output to 4KB to control context growth
 
 checkpoint: true
 
@@ -298,52 +299,19 @@ stages:
       model_tier: default
       description: |
         You are a security code reviewer. Analyze the source file for security vulnerabilities.
-        Read the entire file and identify all security issues.
+
+        CRITICAL: Keep output EXTREMELY compact to fit within token limits:
+        - Report only CRITICAL and HIGH severity issues (skip medium/low)
+        - Title: max 30 characters
+        - Description: max 50 characters
+        - Recommendation: max 50 characters
+        - Limit to top 5 most severe findings per file
+
+        Focus on: injection (SQL, command, template), hardcoded secrets, auth bypass,
+        weak crypto, unsafe deserialization, path traversal, SSRF.
+
         The file is: {{ file_path }}
         The full file content is in file_content in the context.
-
-        Identify every security vulnerability present. Infer the language from the file extension.
-        For each finding, provide: vulnerability type, severity, approximate line number, short title,
-        one-sentence description of the risk, and a concrete code-level recommendation.
-
-        INJECTION: SQL injection, command injection (subprocess/os.system/exec), template injection,
-        code injection (eval/exec), LDAP injection, XXE.
-
-        BROKEN AUTH / CRYPTO: hardcoded secrets, weak crypto (MD5/SHA1 for passwords, ECB, DES),
-        insecure randomness, broken JWT, plaintext password storage, non-constant-time comparison.
-
-        UNSAFE DESERIALIZATION: pickle.loads, yaml.load (not safe_load), marshal, node-serialize,
-        Java ObjectInputStream, XStream, Jackson enableDefaultTyping.
-
-        ACCESS CONTROL: missing auth/authz checks, IDOR, CSRF missing, open redirect, SSRF.
-
-        DATA EXPOSURE: sensitive data in logs, stack traces to users, PII unencrypted.
-
-        PATH / MEMORY: path traversal, buffer overflow, use-after-free, double-free, format string.
-
-        JS/TS: dangerouslySetInnerHTML, innerHTML from user data, prototype pollution, eval with user input.
-
-        RUST: unsafe blocks, unwrap() on external input, integer overflow (as casting), allocation overflow
-        (Vec::with_capacity with unchecked usize arithmetic), parse-and-allocate without max bound.
-
-        GO: database/sql with fmt.Sprintf, TLS InsecureSkipVerify, math/rand for secrets,
-        text/template for HTML, parse-and-allocate with user-controlled size.
-
-        C/C++: strcpy/gets/scanf %s, integer overflow before malloc, use-after-free, double-free,
-        printf with user-controlled format string.
-
-        RUBY: SQL injection (string interpolation in ActiveRecord queries), command injection
-        (backtick execution, system/exec with user input), mass assignment without strong params,
-        insecure deserialization (Marshal.load), hardcoded secrets, unsafe YAML.load,
-        open redirect in redirect_to, XSS via html_safe / raw / content_tag without escaping.
-
-        PHP: SQL injection (mysqli/PDO string concat), command injection (exec/system/passthru
-        with user input), file inclusion (include/require with user path), unserialize on
-        user input, hardcoded credentials, weak crypto (md5/sha1 for passwords), XSS
-        (echo $_GET without htmlspecialchars).
-
-        If there are no findings, return an empty vulnerabilities array.
-        You MUST return a JSON object. Do NOT return a bare array.
     output_mode: guided_json
     output_schema:
       type: object
@@ -353,15 +321,17 @@ stages:
         language:   {type: string}
         vulnerabilities:
           type: array
+          maxItems: 5
           items:
             type: object
-            required: [type, severity, line_approx, title, description, recommendation]
+            required: [type, severity, line_approx, title]
             properties:
-              type:           {type: string}
-              severity:       {type: string, enum: [critical, high, medium, low]}
+              type:           {type: string, maxLength: 25}
+              severity:       {type: string, enum: [critical, high]}
               line_approx:    {type: integer}
-              title:          {type: string}
-              description:    {type: string}
+              title:          {type: string, maxLength: 30}
+              description:    {type: string, maxLength: 50}
+              recommendation: {type: string, maxLength: 50}
               recommendation: {type: string}
 
   - id: aggregate_code_findings
@@ -569,6 +539,12 @@ stages:
         4. Two dependency findings for the same CVE ID or package — merge into one, source=dependency.
         5. When merging, prefer the description from the source with the most detail (line number,
            code snippet, or CVE ID). Keep the higher of the two severity ratings.
+
+        OUTPUT CONSTRAINTS:
+        - Keep titles under 40 characters
+        - Keep descriptions under 80 characters
+        - Keep recommendations under 80 characters
+        - Focus on CRITICAL and HIGH severity findings
     output_mode: guided_json
     output_schema:
       type: object
@@ -583,11 +559,11 @@ stages:
               id:             { type: string }
               source:         { type: string, enum: [code_analysis, config, dependency, supply_chain, secrets] }
               severity:       { type: string, enum: [critical, high, medium, low] }
-              title:          { type: string }
+              title:          { type: string, maxLength: 40 }
               file:           { type: string }
               line_approx:    { type: integer }
-              description:    { type: string }
-              recommendation: { type: string }
+              description:    { type: string, maxLength: 80 }
+              recommendation: { type: string, maxLength: 80 }
         total_count: { type: integer }
         by_severity:
           type: object
@@ -614,6 +590,11 @@ stages:
         Rank all findings by: (1) severity, (2) exploitability, (3) ease of fix.
         Assign effort as low (< 1 hour), medium (1-4 hours), or high (> 4 hours).
         The highest-priority item should be the one that is most critical AND easiest to fix.
+
+        OUTPUT CONSTRAINTS:
+        - Keep titles under 40 characters
+        - Keep rationale under 80 characters
+        - Limit to top 20 highest-priority tasks
     output_mode: guided_json
     output_schema:
       type: object
@@ -621,12 +602,17 @@ stages:
       properties:
         tasks:
           type: array
+          maxItems: 20
           items:
             type: object
             required: [priority, finding_id, title, severity, effort, rationale]
             properties:
               priority:   { type: integer }
               finding_id: { type: string }
+              title:      { type: string, maxLength: 40 }
+              severity:   { type: string, enum: [critical, high, medium, low] }
+              effort:     { type: string, enum: [low, medium, high] }
+              rationale:  { type: string, maxLength: 80 }
               title:      { type: string }
               severity:   { type: string }
               effort:     { type: string, enum: [low, medium, high] }
