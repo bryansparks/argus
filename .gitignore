@@ -1,18 +1,41 @@
+# Environment and secrets
 .env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Python
 __pycache__/
 *.pyc
+*.pyo
+*.egg-info/
 .venv/
+venv/
+
+# Argus runtime
 /tmp/argus-*
 argus-report-*.md
-*.egg-info/
+*.log
+.argus/
+
+# Testing
 .pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# IDE
 .DS_Store
 .vscode/
 .idea/
+*.swp
+*.swo
+
+# Build
 dist/
 build/
-.coverage
-htmlcov/
-*.log
+
+# Linting
 .ruff_cache/
 .mypy_cache/
