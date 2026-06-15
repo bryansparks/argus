@@ -148,6 +148,45 @@ def _on_event_verbose(event_type: str, data: dict) -> None:
         click.echo(f"[argus] ✓  {data['stage']}  ({data['elapsed_s']}s)")
 
 
+def _armature_renderers():
+    """Return Armature's CLI run-header and live-progress renderers.
+
+    Argus runs the Armature harness in-process, so it doesn't get the banner that
+    ``armature run`` prints. We reuse the exact same renderers here so a scan shows
+    the workflow's stages, tiers, and live progress — making it clear that Argus *is*
+    an Armature workflow. These are internal helpers; if a future armature version
+    changes them we fall back to Argus's simpler output instead of failing the scan.
+
+    Returns (print_run_header, make_on_event) or (None, None) if unavailable.
+    """
+    try:
+        from armature.cli import _make_on_event, _print_run_header
+        return _print_run_header, _make_on_event
+    except Exception:
+        return None, None
+
+
+async def _last_run_info(harness) -> dict | None:
+    """Compute the "Last run … completed in …" summary shown in the run header."""
+    try:
+        from datetime import UTC, datetime
+        await harness._traces.init()
+        last_rid = await harness._traces.latest_run_id(harness._spec.name)
+        if not last_rid:
+            return None
+        prior = await harness._traces.query_by_run(last_rid)
+        if not prior:
+            return None
+        first_ts = datetime.fromisoformat(prior[0].timestamp)
+        if first_ts.tzinfo is None:
+            first_ts = first_ts.replace(tzinfo=UTC)
+        ago_s = (datetime.now(UTC) - first_ts).total_seconds()
+        total_s = sum(t.latency_ms for t in prior) / 1000
+        return {"ago_s": ago_s, "elapsed_s": total_s}
+    except Exception:
+        return None
+
+
 def _format_transcript(run_id: str, repo_url: str, entries: list[dict]) -> str:
     lines = [
         "# Argus Agent Transcript",
@@ -208,17 +247,28 @@ async def _run_scan(
     workflow_path: Path | None = None,
 ) -> None:
     wf = workflow_path or WORKFLOW
-    click.echo(f"[argus] Loading workflow: {wf}")
     spec = load_spec(wf)
-    harness = Harness(
-        spec=spec,
-        on_event=_on_event_verbose if verbose else None,
-    )
+    harness = Harness(spec=spec)
     # Register Argus-specific behaviors (failure alerts, HQS degradation, etc.)
     for rule in create_argus_behaviors():
         harness._behaviors.register(rule)
 
-    click.echo(f"[argus] Scanning: {repo_url}")
+    # Show the Armature workflow banner + live stage progress, exactly as
+    # `armature run` does. This makes visible that Argus is an Armature workflow.
+    # `repo_url` is the only input value we surface — never `clone_url`, which may
+    # embed a git token.
+    print_run_header, make_on_event = _armature_renderers()
+    if print_run_header and make_on_event:
+        last_run = await _last_run_info(harness)
+        print_run_header(spec, False, {"repo_url": repo_url}, last_run)
+        fan_out_ids = {s.id for s in spec.stages if s.fan_out}
+        harness._on_event = make_on_event(False, fan_out_ids=fan_out_ids)
+    else:
+        # Older armature without the renderer API — fall back to simple output.
+        click.echo(f"[argus] Loading workflow: {wf}")
+        click.echo(f"[argus] Scanning: {repo_url}")
+        harness._on_event = _on_event_verbose if verbose else None
+
     if git_token:
         click.echo("[argus] Using git token for private repo authentication.")
 

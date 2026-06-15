@@ -15,12 +15,13 @@ Argus scans a GitHub repository or local codebase and produces a prioritized, ac
 # Scan a GitHub repository
 argus scan https://github.com/org/repo
 
-# Scan with verbose progress output
-argus scan https://github.com/org/repo --verbose
-
 # Scan a local codebase
 argus scan ./my-project
 ```
+
+Every scan opens with a live view of the underlying Armature workflow — its stages,
+model tiers, and per-stage progress — so you can see exactly how the agentic pipeline
+runs. This is on-screen only; it never appears in the generated report.
 
 ---
 
@@ -252,9 +253,6 @@ argus scan REPO_URL [OPTIONS]
 # Scan a public GitHub repository
 argus scan https://github.com/OWASP/Top10
 
-# Scan with live progress output
-argus scan https://github.com/org/repo --verbose
-
 # Save full agent transcript (system prompts + responses)
 argus scan https://github.com/org/repo --transcript ~/transcript.md
 
@@ -262,14 +260,14 @@ argus scan https://github.com/org/repo --transcript ~/transcript.md
 argus scan https://github.com/org/repo --report-dir ./security-reports
 
 # Scan a local codebase
-argus scan ./my-project --verbose
+argus scan ./my-project
 ```
 
 **Options:**
 
 | Option | Description |
 |--------|-------------|
-| `--verbose`, `-v` | Print stage-by-stage progress |
+| `--verbose`, `-v` | Accepted for compatibility; live stage progress is shown by default |
 | `--report-dir PATH` | Output directory (default: `~/argus-reports/<repo>/`) |
 | `--transcript PATH` | Write agent transcript to Markdown file |
 | `--workflow PROFILE` | Use `iso25010` for quality assessment instead of security |
