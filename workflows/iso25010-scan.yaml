@@ -95,10 +95,25 @@ memory:
   inject_as: _false_positive_memory
   staleness_threshold_days: 14
 
-safety_mode: strict
+safety_mode: permissive
 
 safety_rules:
-  # Explicit allow rules for all tools used in this workflow
+  # Block rules for destructive operations
+  - tool: shell
+    condition:
+      field: cmd
+      op: matches_regex
+      value: "git\\s+(push|commit|merge|rebase)"
+    action: block
+    message: "Git write operations are not permitted in scan mode"
+  - tool: shell
+    condition:
+      field: cmd
+      op: matches_regex
+      value: "rm\\s+-rf"
+    action: block
+    message: "Destructive rm -rf not permitted"
+  # Explicit allow rules for non-shell tools (documents intent, not required in permissive mode)
   - tool: list_source_files
     condition:
       field: repo_dir
@@ -148,7 +163,6 @@ safety_rules:
       value: ""
     action: allow
     message: "Report generation allowed"
-  # Block rules for destructive operations
   - tool: shell
     condition:
       field: cmd
