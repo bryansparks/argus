@@ -423,7 +423,7 @@ armature run workflows/repo-scan.yaml --input repo_url=... --auto-improve
 ```
 
 The improvement system:
-1. Computes the Implicit Harness Rating (IHR) from trace history
+1. Computes the Harness Quality Score (HQS) from trace history
 2. Diagnoses failure signatures (which stages are failing and how)
 3. Calls a frontier LLM to propose targeted spec revisions
 4. Applies safe changes automatically; stages structural changes for review

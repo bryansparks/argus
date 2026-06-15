@@ -86,8 +86,8 @@ The workflow specs enforce safety rules that block:
 
 Automatic alerts for:
 - High failure rates (>30% over 20 runs)
-- Quality degradation (IHR drop >0.15)
-- Critically low quality scores (IHR <0.60)
+- Quality degradation (HQS drop >0.15)
+- Critically low quality scores (HQS <0.60)
 
 ### Checkpoint/Resume
 
