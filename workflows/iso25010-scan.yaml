@@ -9,49 +9,49 @@ mission: |
 model_tiers:
   tiny:
     provider: openrouter
-    model: minimax/minimax-m2.5:free
+    model: qwen/qwen-3.2-3b-instruct:free
     api_key_env: OPENROUTER_API_KEY
     temperature: 0.2
     max_tokens: 2048
 
   small:
     provider: openrouter
-    model: minimax/minimax-m2.5:free
+    model: qwen/qwen-3.2-3b-instruct:free
     api_key_env: OPENROUTER_API_KEY
     temperature: 0.2
     max_tokens: 4096
 
   medium:
     provider: openrouter
-    model: nvidia/nemotron-3-super-120b-a12b:free
+    model: qwen/qwen-3-235b-a22b-instruct:free
     api_key_env: OPENROUTER_API_KEY
     temperature: 0.2
     max_tokens: 4096
 
   large:
     provider: openrouter
-    model: nvidia/nemotron-3-super-120b-a12b:free
+    model: qwen/qwen-3-235b-a22b-instruct:free
     api_key_env: OPENROUTER_API_KEY
     temperature: 0.2
     max_tokens: 8192
 
   frontier:
     provider: openrouter
-    model: nvidia/nemotron-3-super-120b-a12b:free
+    model: qwen/qwen-3-235b-a22b-instruct:free
     api_key_env: OPENROUTER_API_KEY
     temperature: 0.3
     max_tokens: 8192
 
   analysis:
     provider: openrouter
-    model: nvidia/nemotron-3-super-120b-a12b:free
+    model: qwen/qwen-3-235b-a22b-instruct:free
     api_key_env: OPENROUTER_API_KEY
     temperature: 0.2
     max_tokens: 8192
 
   synthesis:
     provider: openrouter
-    model: nvidia/nemotron-3-super-120b-a12b:free
+    model: qwen/qwen-3-235b-a22b-instruct:free
     api_key_env: OPENROUTER_API_KEY
     temperature: 0.2
     max_tokens: 32768
