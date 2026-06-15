@@ -23,31 +23,31 @@ model_tiers:
 
   medium:
     provider: openrouter
-    model: qwen/qwen-3-235b-a22b-instruct:free
+    model: meta-llama/llama-3.1-8b-instruct:free
     api_key_env: OPENROUTER_API_KEY
     temperature: 0.2
     max_tokens: 4096
 
   large:
     provider: openrouter
-    model: qwen/qwen-3-235b-a22b-instruct:free
+    model: meta-llama/llama-3.1-8b-instruct:free
     api_key_env: OPENROUTER_API_KEY
     temperature: 0.2
     max_tokens: 8192
 
   frontier:
     provider: openrouter
-    model: qwen/qwen-3-235b-a22b-instruct:free
+    model: meta-llama/llama-3.1-8b-instruct:free
     api_key_env: OPENROUTER_API_KEY
     temperature: 0.3
-    max_tokens: 16384
+    max_tokens: 8192
 
   synthesis:
     provider: openrouter
-    model: qwen/qwen-3-235b-a22b-instruct:free
+    model: meta-llama/llama-3.1-8b-instruct:free
     api_key_env: OPENROUTER_API_KEY
     temperature: 0.2
-    max_tokens: 16384
+    max_tokens: 8192
 
 role_type_defaults:
   worker: small
@@ -192,41 +192,41 @@ adapters:
     type: script
     cmd: >-
       (echo '=== DOCKER ===';
-      find /tmp/argus-{{ run_id }} -name 'Dockerfile*' ! -path '*/.git/*' | head -3 | while read f; do echo "--- $f ---"; head -80 "$f"; done || echo 'none';
+      find /tmp/argus-{{ run_id }} -name 'Dockerfile*' ! -path '*/.git/*' | head -2 | while read f; do echo "--- $f ---"; head -50 "$f"; done || echo 'none';
       echo '=== COMPOSE ===';
-      find /tmp/argus-{{ run_id }} -name 'docker-compose*.yml' ! -path '*/.git/*' | head -2 | while read f; do echo "--- $f ---"; head -100 "$f"; done || echo 'none';
+      find /tmp/argus-{{ run_id }} -name 'docker-compose*.yml' ! -path '*/.git/*' | head -1 | while read f; do echo "--- $f ---"; head -60 "$f"; done || echo 'none';
       echo '=== FRAMEWORK_SETTINGS ===';
-      find /tmp/argus-{{ run_id }} \( -name 'settings*.py' -o -name 'config*.py' -o -name 'app.py' -o -name 'main.py' \) ! -path '*/.git/*' ! -path '*/venv/*' | head -4 | while read f; do echo "--- $f ---"; head -100 "$f"; done || echo 'none';
+      find /tmp/argus-{{ run_id }} \( -name 'settings*.py' -o -name 'config*.py' -o -name 'app.py' -o -name 'main.py' \) ! -path '*/.git/*' ! -path '*/venv/*' | head -2 | while read f; do echo "--- $f ---"; head -60 "$f"; done || echo 'none';
       echo '=== ENV_TEMPLATES ===';
-      find /tmp/argus-{{ run_id }} -name '.env*' ! -name '.env' ! -path '*/.git/*' | head -3 | while read f; do head -50 "$f"; done 2>/dev/null || echo 'none';
+      find /tmp/argus-{{ run_id }} -name '.env*' ! -name '.env' ! -path '*/.git/*' | head -2 | while read f; do head -30 "$f"; done 2>/dev/null || echo 'none';
       echo '=== CI_WORKFLOWS ===';
-      find /tmp/argus-{{ run_id }}/.github/workflows \( -name '*.yml' -o -name '*.yaml' \) 2>/dev/null | head -8 | while read f; do echo "--- $f ---"; head -100 "$f"; done || echo 'none';
+      find /tmp/argus-{{ run_id }}/.github/workflows \( -name '*.yml' -o -name '*.yaml' \) 2>/dev/null | head -4 | while read f; do echo "--- $f ---"; head -60 "$f"; done || echo 'none';
       echo '=== GITLAB_CI ===';
-      find /tmp/argus-{{ run_id }} -maxdepth 2 -name '.gitlab-ci.yml' ! -path '*/.git/*' 2>/dev/null | head -2 | while read f; do echo "--- $f ---"; head -120 "$f"; done || echo 'none';
+      find /tmp/argus-{{ run_id }} -maxdepth 2 -name '.gitlab-ci.yml' ! -path '*/.git/*' 2>/dev/null | head -1 | while read f; do echo "--- $f ---"; head -80 "$f"; done || echo 'none';
       echo '=== CIRCLECI ===';
-      find /tmp/argus-{{ run_id }} -name 'config.yml' -path '*/.circleci/*' 2>/dev/null | head -1 | while read f; do echo "--- $f ---"; head -120 "$f"; done || echo 'none';
+      find /tmp/argus-{{ run_id }} -name 'config.yml' -path '*/.circleci/*' 2>/dev/null | head -1 | while read f; do echo "--- $f ---"; head -80 "$f"; done || echo 'none';
       echo '=== JENKINS ===';
-      find /tmp/argus-{{ run_id }} -maxdepth 3 -name 'Jenkinsfile*' ! -path '*/.git/*' 2>/dev/null | head -2 | while read f; do echo "--- $f ---"; head -100 "$f"; done || echo 'none';
+      find /tmp/argus-{{ run_id }} -maxdepth 3 -name 'Jenkinsfile*' ! -path '*/.git/*' 2>/dev/null | head -1 | while read f; do echo "--- $f ---"; head -60 "$f"; done || echo 'none';
       echo '=== AZURE_PIPELINES ===';
-      find /tmp/argus-{{ run_id }} -maxdepth 2 \( -name 'azure-pipelines*.yml' -o -name 'azure-pipelines*.yaml' \) ! -path '*/.git/*' 2>/dev/null | head -2 | while read f; do echo "--- $f ---"; head -100 "$f"; done || echo 'none';
+      find /tmp/argus-{{ run_id }} -maxdepth 2 \( -name 'azure-pipelines*.yml' -o -name 'azure-pipelines*.yaml' \) ! -path '*/.git/*' 2>/dev/null | head -1 | while read f; do echo "--- $f ---"; head -60 "$f"; done || echo 'none';
       echo '=== BITBUCKET_PIPELINES ===';
-      if [ -f /tmp/argus-{{ run_id }}/bitbucket-pipelines.yml ]; then head -100 /tmp/argus-{{ run_id }}/bitbucket-pipelines.yml; else echo 'none'; fi;
+      if [ -f /tmp/argus-{{ run_id }}/bitbucket-pipelines.yml ]; then head -60 /tmp/argus-{{ run_id }}/bitbucket-pipelines.yml; else echo 'none'; fi;
       echo '=== TRAVIS_CI ===';
-      if [ -f /tmp/argus-{{ run_id }}/.travis.yml ]; then head -80 /tmp/argus-{{ run_id }}/.travis.yml; else echo 'none'; fi;
+      if [ -f /tmp/argus-{{ run_id }}/.travis.yml ]; then head -50 /tmp/argus-{{ run_id }}/.travis.yml; else echo 'none'; fi;
       echo '=== JAVA_BUILD ===';
-      find /tmp/argus-{{ run_id }} \( -name 'pom.xml' -o -name 'build.gradle' -o -name 'build.gradle.kts' -o -name 'settings.gradle' \) ! -path '*/.git/*' ! -path '*/target/*' | head -4 | while read f; do echo "--- $f ---"; head -100 "$f"; done || echo 'none';
+      find /tmp/argus-{{ run_id }} \( -name 'pom.xml' -o -name 'build.gradle' -o -name 'build.gradle.kts' -o -name 'settings.gradle' \) ! -path '*/.git/*' ! -path '*/target/*' | head -2 | while read f; do echo "--- $f ---"; head -60 "$f"; done || echo 'none';
       echo '=== SPRING_CONFIG ===';
-      find /tmp/argus-{{ run_id }} \( -name 'application.properties' -o -name 'application.yml' -o -name 'application-*.properties' -o -name 'application-*.yml' \) ! -path '*/.git/*' ! -path '*/target/*' | head -4 | while read f; do echo "--- $f ---"; head -80 "$f"; done || echo 'none';
+      find /tmp/argus-{{ run_id }} \( -name 'application.properties' -o -name 'application.yml' -o -name 'application-*.properties' -o -name 'application-*.yml' \) ! -path '*/.git/*' ! -path '*/target/*' | head -2 | while read f; do echo "--- $f ---"; head -50 "$f"; done || echo 'none';
       echo '=== JAVA_WEB_XML ===';
-      find /tmp/argus-{{ run_id }} \( -name 'web.xml' -o -name 'persistence.xml' -o -name 'beans.xml' -o -name 'security.xml' \) ! -path '*/.git/*' ! -path '*/target/*' | head -3 | while read f; do echo "--- $f ---"; head -80 "$f"; done || echo 'none';
+      find /tmp/argus-{{ run_id }} \( -name 'web.xml' -o -name 'persistence.xml' -o -name 'beans.xml' -o -name 'security.xml' \) ! -path '*/.git/*' ! -path '*/target/*' | head -2 | while read f; do echo "--- $f ---"; head -50 "$f"; done || echo 'none';
       echo '=== JS_FRAMEWORK_CONFIG ===';
-      find /tmp/argus-{{ run_id }} \( -name 'next.config.js' -o -name 'next.config.ts' -o -name 'next.config.mjs' -o -name 'vite.config.ts' -o -name 'vite.config.js' -o -name 'nuxt.config.ts' -o -name 'nuxt.config.js' \) ! -path '*/.git/*' ! -path '*/node_modules/*' | head -4 | while read f; do echo "--- $f ---"; head -80 "$f"; done || echo 'none';
+      find /tmp/argus-{{ run_id }} \( -name 'next.config.js' -o -name 'next.config.ts' -o -name 'next.config.mjs' -o -name 'vite.config.ts' -o -name 'vite.config.js' -o -name 'nuxt.config.ts' -o -name 'nuxt.config.js' \) ! -path '*/.git/*' ! -path '*/node_modules/*' | head -2 | while read f; do echo "--- $f ---"; head -50 "$f"; done || echo 'none';
       echo '=== NPM_PACKAGE_JSON ===';
-      find /tmp/argus-{{ run_id }} -maxdepth 2 -name 'package.json' ! -path '*/node_modules/*' ! -path '*/.git/*' | head -3 | while read f; do echo "--- $f ---"; head -60 "$f"; done || echo 'none';
+      find /tmp/argus-{{ run_id }} -maxdepth 2 -name 'package.json' ! -path '*/node_modules/*' ! -path '*/.git/*' | head -2 | while read f; do echo "--- $f ---"; head -40 "$f"; done || echo 'none';
       echo '=== CARGO_MANIFEST ===';
-      find /tmp/argus-{{ run_id }} \( -name 'Cargo.toml' -o -name 'Cargo.lock' \) ! -path '*/.git/*' ! -path '*/target/*' | head -4 | while read f; do echo "--- $f ---"; head -100 "$f"; done || echo 'none';
+      find /tmp/argus-{{ run_id }} \( -name 'Cargo.toml' -o -name 'Cargo.lock' \) ! -path '*/.git/*' ! -path '*/target/*' | head -2 | while read f; do echo "--- $f ---"; head -60 "$f"; done || echo 'none';
       echo '=== GO_MANIFEST ===';
-      find /tmp/argus-{{ run_id }} \( -name 'go.mod' -o -name 'go.sum' \) ! -path '*/.git/*' ! -path '*/vendor/*' | head -4 | while read f; do echo "--- $f ---"; head -100 "$f"; done || echo 'none') | head -c 32000
+      find /tmp/argus-{{ run_id }} \( -name 'go.mod' -o -name 'go.sum' \) ! -path '*/.git/*' ! -path '*/vendor/*' | head -2 | while read f; do echo "--- $f ---"; head -60 "$f"; done || echo 'none') | head -c 16000
 
   cleanup:
     name: cleanup
@@ -256,7 +256,7 @@ stages:
 
   - id: triage_files
     depends_on: [list_source_files]
-    skip_if: "{{ list_source_files.total_count <= 30 }}"
+    skip_if: "{{ list_source_files.total_count <= 20 }}"
     fail_as_value: true
     signature:
       input:
@@ -267,7 +267,7 @@ stages:
       model_tier: synthesis
       description: |
         You are a security triage specialist. A repository has {{ list_source_files.total_count }} source files.
-        Your job is to select the 30 files most likely to contain security vulnerabilities.
+        Your job is to select the 20 files most likely to contain security vulnerabilities.
 
         The file list is in list_source_files.compact_manifest in the context — one relative path per line,
         pre-sorted so the most security-relevant filenames appear first.
@@ -296,7 +296,7 @@ stages:
         - Static assets, documentation
         - Very large files (> 2000 lines) that are likely generated
 
-        Return up to 30 files. If fewer than 30 files exist, return all of them.
+        Return up to 20 files. If fewer than 20 files exist, return all of them.
     output_mode: guided_json
     output_schema:
       type: object

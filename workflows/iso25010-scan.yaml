@@ -23,38 +23,38 @@ model_tiers:
 
   medium:
     provider: openrouter
-    model: qwen/qwen-3-235b-a22b-instruct:free
+    model: meta-llama/llama-3.1-8b-instruct:free
     api_key_env: OPENROUTER_API_KEY
     temperature: 0.2
     max_tokens: 4096
 
   large:
     provider: openrouter
-    model: qwen/qwen-3-235b-a22b-instruct:free
+    model: meta-llama/llama-3.1-8b-instruct:free
     api_key_env: OPENROUTER_API_KEY
     temperature: 0.2
     max_tokens: 8192
 
   frontier:
     provider: openrouter
-    model: qwen/qwen-3-235b-a22b-instruct:free
+    model: meta-llama/llama-3.1-8b-instruct:free
     api_key_env: OPENROUTER_API_KEY
     temperature: 0.3
-    max_tokens: 16384
+    max_tokens: 8192
 
   analysis:
     provider: openrouter
-    model: qwen/qwen-3-235b-a22b-instruct:free
+    model: meta-llama/llama-3.1-8b-instruct:free
     api_key_env: OPENROUTER_API_KEY
     temperature: 0.2
     max_tokens: 8192
 
   synthesis:
     provider: openrouter
-    model: qwen/qwen-3-235b-a22b-instruct:free
+    model: meta-llama/llama-3.1-8b-instruct:free
     api_key_env: OPENROUTER_API_KEY
     temperature: 0.2
-    max_tokens: 16384
+    max_tokens: 8192
 
 role_type_defaults:
   worker: small
@@ -230,7 +230,7 @@ stages:
 
   - id: triage_files
     depends_on: [list_source_files]
-    skip_if: "{{ list_source_files.total_count <= 60 }}"
+    skip_if: "{{ list_source_files.total_count <= 20 }}"
     signature:
       input:
         list_source_files: File manifest with compact_manifest (newline-separated relative paths, pre-sorted by relevance), repo_dir (absolute path to the cloned repo root), and total_count
@@ -240,7 +240,7 @@ stages:
       model_tier: analysis
       description: |
         You are a software quality analyst. A repository has {{ list_source_files.total_count }} source files.
-        Your job is to select the 60 files most likely to contain ISO 25010 quality issues.
+        Your job is to select the 20 files most likely to contain ISO 25010 quality issues.
 
         The file list is in list_source_files.compact_manifest in the context — one relative path per line.
         {% if list_source_files.compact_manifest_truncated %}
@@ -263,7 +263,7 @@ stages:
 
         Deprioritize auto-generated code, migration scripts, static assets, and locale files.
 
-        Return up to 60 files.
+        Return up to 20 files.
 
         IMPORTANT: You MUST return a JSON object with exactly two keys: "selected_files" (array of
         absolute path strings) and "rationale" (a string). Do NOT return a bare array. Do NOT use
