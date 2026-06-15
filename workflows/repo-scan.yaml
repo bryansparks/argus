@@ -1,6 +1,10 @@
 name: repo-security-scan
 version: "1.0"
 description: "Scan a GitHub repository (Python, JS/TS, Java, Rust, Go) for security vulnerabilities and produce a prioritized hardening report."
+mission: |
+  Produce an actionable, prioritized security report that developers can use
+  to remediate vulnerabilities. Focus on findings with clear evidence and
+  concrete fixes. Flag false positives. Calibrate severity accurately.
 
 model_tiers:
   tiny:
@@ -60,6 +64,27 @@ contracts:
     - name: _stale_memory_keys
 
 checkpoint: true
+
+continuation:
+  carry_forward:
+    - key: synthesize_findings.total_count
+    - key: synthesize_findings.by_severity
+  inject_as: prior_run
+
+triggers:
+  - type: cron
+    schedule: "0 2 * * 1"    # 2am UTC every Monday
+  - type: webhook
+    path: /webhook/repo-scan
+
+sandbox:
+  mode: docker
+  image: python:3.11-slim
+  allow_network: true         # scanners fetch vulnerability DB updates
+  timeout_s: 600.0
+  cpu_limit: "2.0"
+  memory_limit: "2g"
+  host_workspace: ./argus-workspace
 
 memory:
   enabled: true
@@ -688,6 +713,7 @@ stages:
         validate_findings: Validator review with confidence score and false positive flags
         prioritize_tasks: Prioritized remediation task list
         synthesize_findings: Full findings with descriptions and recommendations
+        prior_run: "Summary from previous scan run with keys total_count and by_severity — absent on first run"
     role:
       name: reporter
       type: worker
@@ -731,6 +757,12 @@ stages:
 
         3-5 sentences: what repo was scanned, total findings by severity (use emoji badges inline,
         e.g. "2 🔴 Critical, 3 🟠 High"), the single highest-priority item and why.
+
+        {% if prior_run is defined and prior_run %}
+        Include a one-sentence trend comparison: "This run found {{ synthesize_findings.total_count }} issues
+        versus {{ prior_run.total_count }} in the prior scan
+        ({{ '+' if synthesize_findings.total_count > prior_run.total_count else '' }}{{ synthesize_findings.total_count - prior_run.total_count }} net change)."
+        {% endif %}
 
         If any Critical or High findings exist, add a callout block:
         > [!CAUTION]
@@ -843,6 +875,7 @@ stages:
         - Repository: {{ repo_url }}
         - Stages: clone_repo, list_source_files, triage_files, analyze_file (fan-out), aggregate_code_findings, gather_config, run_scanners, compress_scanners, config_analysis, synthesize_findings, prioritize_tasks, validate_findings, generate_report
         - Validator confidence: {{ validate_findings.confidence }}
+        {% if prior_run is defined and prior_run %}- Prior scan: {{ prior_run.total_count }} total findings ({{ prior_run.by_severity.critical | default(0) }} critical, {{ prior_run.by_severity.high | default(0) }} high){% endif %}
 
         Put the complete Markdown report text into the "report" field of the JSON response.
         Start the report with the `## Security Scan Report` heading and end after the Scan Metadata section.
@@ -861,6 +894,13 @@ stages:
   # Post-run self-analysis: reviews the completed run transcript and suggests improvements
   - id: self_analyst
     post_run: true
+    signature:
+      input:
+        _transcript: Full run transcript (filtered to key stages)
+        _diagnostics: Run failure signatures and error types
+        synthesize_findings.total_count: Total findings count
+        validate_findings.confidence: Validator confidence score
+        run_scanners: Raw scanner output summary
     role:
       name: Self-Analyst
       type: judge
@@ -868,7 +908,7 @@ stages:
       description: |
         You are reviewing a completed Argus security scan run to identify quality improvements.
 
-        The full run transcript is available in _transcript in the context.
+        The filtered run transcript is in _transcript in the context.
         Run diagnostics (failure signatures, error types) are in _diagnostics in the context.
 
         Your task:

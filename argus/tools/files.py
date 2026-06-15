@@ -536,6 +536,21 @@ async def _handle_generate_markdown_report(args: dict[str, Any]) -> dict[str, An
     dominant_char = max(char_counts, key=char_counts.get) if char_counts else "maintainability"
     dominant_display = _CHAR_DISPLAY.get(dominant_char, dominant_char.title())
 
+    # Parse prior_run for delta reporting
+    prior = args.get("prior_run")
+    if isinstance(prior, str):
+        prior = _parse_stringified(prior)
+    prior_total: int | None = None
+    prior_sev: dict[str, int] = {}
+    if isinstance(prior, dict):
+        try:
+            prior_total = int(prior.get("total_count", 0))
+        except (TypeError, ValueError):
+            prior_total = None
+        raw_sev = prior.get("by_severity", {})
+        if isinstance(raw_sev, dict):
+            prior_sev = {k: int(v) for k, v in raw_sev.items() if isinstance(v, (int, float))}
+
     lines: list[str] = []
 
     # Executive Summary
@@ -566,6 +581,13 @@ async def _handle_generate_markdown_report(args: dict[str, Any]) -> dict[str, An
             + (f"in `{top_file}`" if top_file else "") +
             f", which should be addressed first to improve {dominant_display.lower()}."
         )
+        if prior_total is not None:
+            delta = total - prior_total
+            sign = "+" if delta > 0 else ""
+            lines.append(
+                f"Trend vs. prior scan: **{sign}{delta} net change** "
+                f"({prior_total} findings previously, {total} now)."
+            )
         if sev_counts["high"] > 0:
             high_titles = [f.get("title", "issue") for f in findings if str(f.get("severity", "")).lower() == "high"]
             lines.append("")
@@ -670,6 +692,9 @@ async def _handle_generate_markdown_report(args: dict[str, Any]) -> dict[str, An
         "synthesize_findings, prioritize_tasks, validate_findings, generate_report"
     )
     lines.append(f"- Validator confidence: {confidence}")
+    if prior_total is not None:
+        prior_sev_str = ", ".join(f"{k}: {v}" for k, v in sorted(prior_sev.items()) if v > 0)
+        lines.append(f"- Prior scan: {prior_total} total findings ({prior_sev_str})")
 
     report = "\n".join(lines)
     return {"report": report}

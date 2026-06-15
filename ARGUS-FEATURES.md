@@ -1,7 +1,9 @@
 # Argus Security Scanner — Feature Reference
 
-**Audience:** Engineering management  
-**Purpose:** Describes what Argus detects, which languages and platforms it supports, and how findings are delivered.
+**Audience:** Engineering management and developers  
+**Purpose:** Describes what Argus detects, which languages and platforms it supports, how findings are delivered, and how Argus demonstrates Armature's capabilities for agentic teams.
+
+Argus is open-source and intended as a reference implementation for building production-grade agentic workflows with [Armature](https://github.com/bryansparks/armature). See the section **Built on Armature** at the end of this document for a map of every Armature primitive Argus uses.
 
 ---
 
@@ -272,15 +274,98 @@ A scan runs a coordinated pipeline of stages:
 
 1. **Clone** — shallow clone of the repository (supports public and private repos via token auth)
 2. **File Discovery** — enumerate all source files; pre-sort by security relevance for large repos
-3. **Triage** — for repos with more than 60 source files, an LLM selects the 60 most security-relevant files
-4. **Per-File Code Analysis** — each selected file analyzed in parallel by an LLM security reviewer
+3. **Triage** — for repos with more than 60 source files, an LLM selects the 60 most security-relevant files; skipped automatically on small repos
+4. **Per-File Code Analysis** — each selected file analyzed in parallel (up to 20 concurrent) by an LLM security reviewer
 5. **Config Gathering** — collect all infrastructure and CI/CD configuration files
 6. **Scanner Suite** — run all automated tools concurrently (gitleaks, semgrep, gosec, cppcheck, grype, pip-audit, mobsfscan)
 7. **Scanner Compression** — distill raw tool output into structured findings
 8. **Config Analysis** — LLM reviews infrastructure and CI/CD configs
-9. **Synthesis** — deduplicate and merge findings from all sources into a unified list
+9. **Synthesis** — deduplicate and merge findings from all seven sources into a unified list; includes prior-scan context for trend awareness
 10. **Prioritization** — rank findings by severity and remediation effort
-11. **Validation** — independent LLM review to reject false positives
-12. **Report Generation** — produce the final Markdown and HTML report
+11. **Validation** — independent LLM judge rejects false positives; consults rolling false-positive memory from prior scans
+12. **Report Generation** — produce the final Markdown and HTML report with trend delta vs. prior scan
+13. **Post-Run Self-Analysis** — a separate judge stage reviews the completed run transcript and suggests prompt improvements for the next scan
 
 Typical scan time: 3–8 minutes depending on repo size and model availability.
+
+---
+
+## Continuous Scanning and Automation
+
+Argus is designed to run repeatedly — not just on demand. Each scan compares against the prior one, so engineering teams see whether their security posture is improving over time.
+
+### Scheduled and Webhook-Triggered Scans
+
+Both workflow specs declare triggers in their YAML:
+
+```yaml
+triggers:
+  - type: cron
+    schedule: "0 2 * * 1"    # 2am UTC every Monday
+  - type: webhook
+    path: /webhook/repo-scan
+```
+
+Running `armature watch workflows/repo-scan.yaml` starts a daemon that fires the scan on schedule and on every `POST /webhook/repo-scan` call — no orchestration infrastructure required. A CI step, a GitHub Actions workflow, or a merge-queue hook can POST to that endpoint to trigger a scan on every meaningful code change.
+
+### Trend Reporting
+
+Every report includes a one-line trend comparison against the prior scan:
+
+> Trend vs. prior scan: **-3 net change** (14 findings previously, 11 now).
+
+The Scan Metadata section records prior scan severity counts, so reviewers can confirm that critical issues are being resolved rather than accumulating. On the first scan there is no baseline and the trend line is omitted; it appears automatically from the second run onward without any configuration.
+
+### Rolling False-Positive Memory
+
+The validation stage remembers which finding IDs were flagged as false positives in prior scans (up to the last 10 runs). This prevents the same false alarm from appearing in every report. The memory is per-repository and per-scan-type — separate from the trend tracking.
+
+---
+
+## Sandboxed Execution
+
+Both workflow specs declare a Docker sandbox:
+
+```yaml
+sandbox:
+  mode: docker
+  allow_network: true     # scanner tools fetch vulnerability DB updates
+  cpu_limit: "2.0"
+  memory_limit: "2g"
+  timeout_s: 600.0
+  host_workspace: ./argus-workspace
+```
+
+This bounds the resource consumption of a scan to two cores and two gigabytes regardless of repository size or what the repository's code does. Multiple concurrent scans running on the same host do not starve each other. The sandbox configuration lives in the spec file, so resource limits are reviewed and version-controlled alongside the workflow definition itself.
+
+---
+
+## Built on Armature
+
+Argus is a reference implementation for [Armature](https://github.com/bryansparks/armature), a YAML-first harness for multi-agent LLM workflows. The table below maps each Argus capability to the Armature primitive that implements it.
+
+| Argus Capability | Armature Primitive | Where in the Spec |
+|---|---|---|
+| Parallel per-file code analysis (up to 20 files concurrently) | `fan_out:` + `partition_source:` | `analyze_file` stage |
+| Automatic fan-in — merge all per-file results into one list | `fan_in: list` + `aggregate_findings` tool | `aggregate_code_findings` stage |
+| Structured JSON output from every LLM stage | `output_mode: guided_json` + `output_schema:` | All analysis stages |
+| Independent judge stage that rejects false positives | `role.type: judge` | `validate_findings` stage |
+| Rolling false-positive memory across runs | `memory:` block with `capture:` and `max_entries:` | Top-level spec |
+| Trend reporting — carry forward severity counts to the next run | `continuation:` block with `carry_forward:` keys | Top-level spec |
+| Scheduled scans (weekly cron) | `triggers:` with `type: cron` | Top-level spec |
+| Webhook-triggered scans from CI | `triggers:` with `type: webhook` | Top-level spec |
+| Resource-bounded execution | `sandbox:` with `cpu_limit:` and `memory_limit:` | Top-level spec |
+| Automatic retry on LLM output schema failure | `on_fail: loop:` with `max:` | `config_analysis`, `validate_findings` stages |
+| Skip expensive triage on small repos | `skip_if:` Jinja2 condition | `triage_files` stage |
+| Context isolation — each stage sees only what it needs | `signature: input:` scoping | All multi-source stages |
+| Post-run self-analysis of scan quality | `post_run: true` | `self_analyst` stage |
+| Fail-safe value instead of crash on triage failure | `fail_as_value: true` | `triage_files` stage |
+| Resume interrupted scans from the last completed stage | `checkpoint: true` | Top-level spec |
+| Declarative tool safety — fail-closed, allow-listed | `safety_mode: strict` + `safety_rules:` | Top-level spec |
+| Pluggable scanner tools registered from a Python module | `tools: - module:` | `argus.tools.scanners`, `argus.tools.files` |
+
+### What This Means for Agentic Teams
+
+Every behavior in the table above is declared in a YAML spec file — not scattered across Python orchestration code. A security engineer can read the spec and understand exactly what the agent is allowed to do, how it handles failures, what data each stage can see, and how it learns from prior runs. A new team member can contribute a scan rule by editing the YAML without touching the harness code.
+
+That is the central argument for Armature: complex agentic behavior should be auditable, not emergent.

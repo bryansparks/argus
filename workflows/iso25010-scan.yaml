@@ -1,6 +1,10 @@
 name: iso25010-quality-scan
 version: "1.0"
 description: "Assess a repository against ISO/IEC 25010 software quality characteristics and produce a prioritized improvement report."
+mission: |
+  Produce an actionable ISO 25010 quality assessment with specific, measurable
+  improvement recommendations. Focus on high-impact issues that affect maintainability,
+  reliability, and performance. Provide clear severity ratings and effort estimates.
 
 model_tiers:
   tiny:
@@ -59,6 +63,28 @@ role_type_defaults:
   researcher: large
 
 checkpoint: true
+
+continuation:
+  carry_forward:
+    - key: synthesize_findings.total_count
+    - key: synthesize_findings.by_severity
+    - key: synthesize_findings.by_characteristic
+  inject_as: prior_run
+
+triggers:
+  - type: cron
+    schedule: "0 3 * * 1"    # 3am UTC every Monday (offset from security scan)
+  - type: webhook
+    path: /webhook/iso25010-scan
+
+sandbox:
+  mode: docker
+  image: python:3.11-slim
+  allow_network: true         # scanners fetch rule/DB updates
+  timeout_s: 600.0
+  cpu_limit: "2.0"
+  memory_limit: "2g"
+  host_workspace: ./argus-workspace
 
 memory:
   enabled: true
@@ -391,6 +417,7 @@ stages:
         run_id: Scan run identifier
         aggregate_code_findings: Deduplicated per-file quality findings from LLM code review
         compress_iso_scanners: Structured complexity findings from lizard scanner
+        prior_run: "Summary from previous quality scan with keys total_count, by_severity, by_characteristic — absent on first run"
     role:
       name: synthesizer
       type: orchestrator
@@ -407,6 +434,14 @@ stages:
 
         SOURCE 2 — Complexity scanner (compress_iso_scanners.findings):
           Lizard-detected high-complexity and long functions.
+
+        {% if prior_run is defined and prior_run %}
+        PRIOR SCAN CONTEXT: The previous scan found {{ prior_run.total_count }} total findings
+        (severity: {{ prior_run.by_severity | tojson }};
+        by characteristic: {{ prior_run.by_characteristic | tojson }}).
+        Note any meaningful change in your synthesis — e.g. if maintainability findings
+        increased significantly since the last run.
+        {% endif %}
 
         DEDUPLICATION RULES:
         - If source 1 and source 2 both flag the same function for high complexity,
@@ -598,6 +633,7 @@ stages:
         normalize_synthesize: "{{ normalize_synthesize }}"
         validate_findings: "{{ validate_findings }}"
         prioritize_tasks: "{{ prioritize_tasks }}"
+        prior_run: "{{ prior_run | default('') }}"
 
   - id: cleanup
     adapter: cleanup
@@ -606,6 +642,13 @@ stages:
   # Post-run self-analysis: reviews the completed run transcript and suggests improvements
   - id: self_analyst
     post_run: true
+    signature:
+      input:
+        _transcript: Full run transcript (filtered to key stages)
+        _diagnostics: Run failure signatures and error types
+        synthesize_findings.total_count: Total findings count
+        validate_findings.confidence: Validator confidence score
+        run_iso_scanners: Raw scanner output summary
     role:
       name: Self-Analyst
       type: judge
@@ -613,7 +656,7 @@ stages:
       description: |
         You are reviewing a completed Argus ISO 25010 quality assessment run to identify quality improvements.
 
-        The full run transcript is available in _transcript in the context.
+        The filtered run transcript is in _transcript in the context.
         Run diagnostics (failure signatures, error types) are in _diagnostics in the context.
 
         Your task:
