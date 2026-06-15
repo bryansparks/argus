@@ -1,6 +1,6 @@
 [project]
 name = "armature-argus"
-version = "0.1.0"
+version = "0.1.1"
 description = "Automated security and quality scanning for code repositories, powered by agentic AI"
 readme = "README.md"
 license = { text = "MIT" }

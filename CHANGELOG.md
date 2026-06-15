@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-06-15
+
+### Added
+- Published to PyPI as `armature-argus` (`pip install armature-argus`)
+- Live Armature workflow view on every scan — shows the workflow's stages,
+  model tiers, flags, and per-stage progress, reusing Armature's own renderers
+  (screen-only; never written to the report)
+
+### Changed
+- Moved workflow specs into the `argus` package (`argus/workflows/`) so they
+  ship inside the installed wheel
+- README now documents PyPI as the recommended install method and clarifies
+  that the Armature harness is pulled in automatically as a dependency
+
+## [Pre-1.0]
+
 ### Added
 - Armature governance and self-improvement integration
   - Checkpoint/resume for crash recovery
@@ -43,5 +59,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Behavior registry for trace-triggered alerts
 - Checkpoint/resume for long-running scans
 
-[Unreleased]: https://github.com/bryansparks/argus/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/bryansparks/argus/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/bryansparks/argus/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/bryansparks/argus/releases/tag/v0.1.0
