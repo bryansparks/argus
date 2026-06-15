@@ -163,14 +163,17 @@ Both workflows validate at **LOW risk** under Armature's static risk scoring sys
 
 ## Installation
 
+The recommended way to install Argus is from PyPI:
+
 ```bash
-# Install from PyPI (pulls in armature-agents automatically)
 pip install armature-argus
 ```
 
-The `argus` command is available once installed.
+This pulls in the `armature-agents` runtime and bundled workflow specs automatically, and makes the `argus` command available on your PATH.
 
 ### From source (for development)
+
+Only needed if you want to modify Argus itself:
 
 ```bash
 git clone https://github.com/bryansparks/argus
