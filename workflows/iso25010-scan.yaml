@@ -7,60 +7,28 @@ mission: |
   reliability, and performance. Provide clear severity ratings and effort estimates.
 
 model_tiers:
-  tiny:
+  # Simplified tier structure for single high-quality model
+  # - default: all standard analysis stages (triage, file analysis, config review, synthesis, report)
+  # - judge: critical verification stage (validate_findings) - same model, explicit separation for clarity
+  default:
     provider: openrouter
-    model: qwen/qwen-3.2-3b-instruct:free
-    api_key_env: OPENROUTER_API_KEY
-    temperature: 0.2
-    max_tokens: 1024
-
-  small:
-    provider: openrouter
-    model: qwen/qwen-3.2-3b-instruct:free
-    api_key_env: OPENROUTER_API_KEY
-    temperature: 0.2
-    max_tokens: 2048
-
-  medium:
-    provider: openrouter
-    model: meta-llama/llama-3.1-8b-instruct:free
-    api_key_env: OPENROUTER_API_KEY
-    temperature: 0.2
-    max_tokens: 4096
-
-  large:
-    provider: openrouter
-    model: meta-llama/llama-3.1-8b-instruct:free
+    model: qwen/qwen3.5-397b-a17b
     api_key_env: OPENROUTER_API_KEY
     temperature: 0.2
     max_tokens: 8192
 
-  frontier:
+  judge:
     provider: openrouter
-    model: meta-llama/llama-3.1-8b-instruct:free
-    api_key_env: OPENROUTER_API_KEY
-    temperature: 0.3
-    max_tokens: 8192
-
-  analysis:
-    provider: openrouter
-    model: meta-llama/llama-3.1-8b-instruct:free
-    api_key_env: OPENROUTER_API_KEY
-    temperature: 0.2
-    max_tokens: 8192
-
-  synthesis:
-    provider: openrouter
-    model: meta-llama/llama-3.1-8b-instruct:free
+    model: qwen/qwen3.5-397b-a17b
     api_key_env: OPENROUTER_API_KEY
     temperature: 0.2
     max_tokens: 8192
 
 role_type_defaults:
-  worker: small
-  orchestrator: frontier
-  judge: large
-  researcher: large
+  worker: default
+  orchestrator: default
+  judge: judge
+  researcher: default
 
 checkpoint: true
 
@@ -230,17 +198,17 @@ stages:
 
   - id: triage_files
     depends_on: [list_source_files]
-    skip_if: "{{ list_source_files.total_count <= 20 }}"
+    skip_if: "{{ list_source_files.total_count <= 40 }}"
     signature:
       input:
         list_source_files: File manifest with compact_manifest (newline-separated relative paths, pre-sorted by relevance), repo_dir (absolute path to the cloned repo root), and total_count
     role:
       name: triage_analyst
       type: worker
-      model_tier: analysis
+      model_tier: default
       description: |
         You are a software quality analyst. A repository has {{ list_source_files.total_count }} source files.
-        Your job is to select the 20 files most likely to contain ISO 25010 quality issues.
+        Your job is to select the 40 files most likely to contain ISO 25010 quality issues.
 
         The file list is in list_source_files.compact_manifest in the context — one relative path per line.
         {% if list_source_files.compact_manifest_truncated %}
@@ -263,7 +231,7 @@ stages:
 
         Deprioritize auto-generated code, migration scripts, static assets, and locale files.
 
-        Return up to 20 files.
+        Return up to 40 files.
 
         IMPORTANT: You MUST return a JSON object with exactly two keys: "selected_files" (array of
         absolute path strings) and "rationale" (a string). Do NOT return a bare array. Do NOT use
@@ -302,7 +270,7 @@ stages:
     role:
       name: quality_analyst
       type: worker
-      model_tier: analysis
+      model_tier: default
       description: |
         You are a software quality reviewer applying ISO/IEC 25010. Analyze the source file for
         quality characteristic violations. The file is: {{ file_path }}
@@ -435,7 +403,7 @@ stages:
     role:
       name: synthesizer
       type: orchestrator
-      model_tier: synthesis
+      model_tier: default
       description: |
         You are a software quality analyst synthesizing findings from two sources into one
         unified, deduplicated finding list for the ISO/IEC 25010 quality assessment report.
@@ -539,7 +507,7 @@ stages:
     role:
       name: prioritizer
       type: orchestrator
-      model_tier: analysis
+      model_tier: default
       description: |
         You are a software engineering lead creating a prioritized improvement plan.
         The unified findings list is in normalize_synthesize in the context.
@@ -602,7 +570,7 @@ stages:
     role:
       name: validator
       type: judge
-      model_tier: synthesis
+      model_tier: default
       description: |
         You are a senior software engineer performing a final review before this report is shown to a human.
 
@@ -666,7 +634,7 @@ stages:
     role:
       name: Self-Analyst
       type: judge
-      model_tier: frontier
+      model_tier: judge
       description: |
         You are reviewing a completed Argus ISO 25010 quality assessment run to identify quality improvements.
 
