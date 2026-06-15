@@ -119,11 +119,23 @@ async def _handle_list_source_files(args: dict[str, Any]) -> dict[str, Any]:
 
 async def _handle_read_file(args: dict[str, Any]) -> dict[str, Any]:
     path = args.get("path", "")
+    max_lines = args.get("max_lines", None)
     if not path:
         return {"error": "path is required"}
     try:
-        content = Path(path).read_text(errors="replace")
-        return {"path": path, "content": content, "size_chars": len(content)}
+        if max_lines:
+            with open(path, "rb") as f:
+                lines = []
+                for i, line in enumerate(f):
+                    if i >= max_lines:
+                        break
+                    lines.append(line)
+                content = b"".join(lines).decode("utf-8", errors="replace")
+                truncated = i >= max_lines
+        else:
+            content = Path(path).read_text(errors="replace")
+            truncated = False
+        return {"path": path, "content": content, "size_chars": len(content), "truncated": truncated}
     except Exception as exc:
         return {"error": str(exc), "path": path, "content": ""}
 

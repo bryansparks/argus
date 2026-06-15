@@ -12,14 +12,14 @@ model_tiers:
     model: qwen/qwen-3.2-3b-instruct:free
     api_key_env: OPENROUTER_API_KEY
     temperature: 0.2
-    max_tokens: 2048
+    max_tokens: 1024
 
   small:
     provider: openrouter
     model: qwen/qwen-3.2-3b-instruct:free
     api_key_env: OPENROUTER_API_KEY
     temperature: 0.2
-    max_tokens: 4096
+    max_tokens: 2048
 
   medium:
     provider: openrouter
@@ -40,7 +40,7 @@ model_tiers:
     model: qwen/qwen-3-235b-a22b-instruct:free
     api_key_env: OPENROUTER_API_KEY
     temperature: 0.3
-    max_tokens: 8192
+    max_tokens: 16384
 
   analysis:
     provider: openrouter
@@ -54,7 +54,7 @@ model_tiers:
     model: qwen/qwen-3-235b-a22b-instruct:free
     api_key_env: OPENROUTER_API_KEY
     temperature: 0.2
-    max_tokens: 32768
+    max_tokens: 16384
 
 role_type_defaults:
   worker: small

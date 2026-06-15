@@ -12,14 +12,14 @@ model_tiers:
     model: qwen/qwen-3.2-3b-instruct:free
     api_key_env: OPENROUTER_API_KEY
     temperature: 0.2
-    max_tokens: 2048
+    max_tokens: 1024
 
   small:
     provider: openrouter
     model: qwen/qwen-3.2-3b-instruct:free
     api_key_env: OPENROUTER_API_KEY
     temperature: 0.2
-    max_tokens: 4096
+    max_tokens: 2048
 
   medium:
     provider: openrouter
@@ -40,14 +40,14 @@ model_tiers:
     model: qwen/qwen-3-235b-a22b-instruct:free
     api_key_env: OPENROUTER_API_KEY
     temperature: 0.3
-    max_tokens: 8192
+    max_tokens: 16384
 
   synthesis:
     provider: openrouter
     model: qwen/qwen-3-235b-a22b-instruct:free
     api_key_env: OPENROUTER_API_KEY
     temperature: 0.2
-    max_tokens: 8192
+    max_tokens: 16384
 
 role_type_defaults:
   worker: small
@@ -256,7 +256,7 @@ stages:
 
   - id: triage_files
     depends_on: [list_source_files]
-    skip_if: "{{ list_source_files.total_count <= 60 }}"
+    skip_if: "{{ list_source_files.total_count <= 30 }}"
     fail_as_value: true
     signature:
       input:
@@ -267,7 +267,7 @@ stages:
       model_tier: synthesis
       description: |
         You are a security triage specialist. A repository has {{ list_source_files.total_count }} source files.
-        Your job is to select the 60 files most likely to contain security vulnerabilities.
+        Your job is to select the 30 files most likely to contain security vulnerabilities.
 
         The file list is in list_source_files.compact_manifest in the context — one relative path per line,
         pre-sorted so the most security-relevant filenames appear first.
@@ -296,7 +296,7 @@ stages:
         - Static assets, documentation
         - Very large files (> 2000 lines) that are likely generated
 
-        Return up to 60 files. If fewer than 60 files exist, return all of them.
+        Return up to 30 files. If fewer than 30 files exist, return all of them.
     output_mode: guided_json
     output_schema:
       type: object
@@ -310,19 +310,22 @@ stages:
   - id: analyze_file
     depends_on: [triage_files]
     fan_out: 20
-    partition_source: "{{ triage_files.selected_files if not triage_files._skipped else list_source_files.file_paths }}"
+    partition_source: "{{ triage_files.selected_files if not triage_files._skipped else list_source_files.file_paths[:30] }}"
     partition_key: file_path
     inject_file_as: file_content
     signature:
       input:
         file_path: Absolute path to the source file being analyzed
-        file_content: Full text content of the source file
+        file_content: Source file content (first ~100 lines for large files)
     role:
       name: file_analyst
       type: worker
       model_tier: synthesis
       description: |
-        You are a security code reviewer. Analyze the source file below for security vulnerabilities.
+        You are a security code reviewer. Analyze the source file for security vulnerabilities.
+        Focus on issues visible in the file: imports, class definitions, function signatures,
+        hardcoded secrets, auth checks, and configuration loading.
+        Note: For large files, only the first portion is provided to stay within context limits.
         The file is: {{ file_path }}
         The full file content is in file_content in the context.
 
