@@ -17,8 +17,8 @@ from argus.behaviors import create_argus_behaviors
 from argus.report_html import write_html_report
 
 _WORKFLOWS: dict[str, Path] = {
-    "security": Path(__file__).parent.parent / "workflows" / "repo-scan.yaml",
-    "iso25010": Path(__file__).parent.parent / "workflows" / "iso25010-scan.yaml",
+    "security": Path(__file__).parent / "workflows" / "repo-scan.yaml",
+    "iso25010": Path(__file__).parent / "workflows" / "iso25010-scan.yaml",
 }
 WORKFLOW = _WORKFLOWS["security"]  # kept for model-config-test backward compat
 DEFAULT_REPORT_DIR = Path.home() / "argus-reports"

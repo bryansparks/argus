@@ -306,7 +306,7 @@ triggers:
     path: /webhook/repo-scan
 ```
 
-Running `armature watch workflows/repo-scan.yaml` starts a daemon that fires the scan on schedule and on every `POST /webhook/repo-scan` call — no orchestration infrastructure required. A CI step, a GitHub Actions workflow, or a merge-queue hook can POST to that endpoint to trigger a scan on every meaningful code change.
+Running `armature watch argus/workflows/repo-scan.yaml` starts a daemon that fires the scan on schedule and on every `POST /webhook/repo-scan` call — no orchestration infrastructure required. A CI step, a GitHub Actions workflow, or a merge-queue hook can POST to that endpoint to trigger a scan on every meaningful code change.
 
 ### Trend Reporting
 

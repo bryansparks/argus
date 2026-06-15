@@ -12,7 +12,7 @@ if str(_project_root) not in sys.path:
 pytest_plugins = ("anyio",)
 
 FIXTURE = Path(__file__).parent / "fixtures" / "vulnerable-app"
-WORKFLOW = Path(__file__).parent.parent / "workflows" / "repo-scan.yaml"
+WORKFLOW = Path(__file__).parent.parent / "argus" / "workflows" / "repo-scan.yaml"
 
 
 @pytest.fixture(scope="session")

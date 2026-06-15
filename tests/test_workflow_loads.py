@@ -1,7 +1,7 @@
 from pathlib import Path
 from armature.spec.loader import load_spec
 
-WORKFLOW = Path(__file__).parent.parent / "workflows" / "repo-scan.yaml"
+WORKFLOW = Path(__file__).parent.parent / "argus" / "workflows" / "repo-scan.yaml"
 
 
 def test_workflow_yaml_exists():

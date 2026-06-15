@@ -71,8 +71,8 @@ Argus includes two workflow profiles:
 
 | Workflow | Purpose | Stages | Risk Score |
 |----------|---------|--------|------------|
-| `workflows/repo-scan.yaml` | Security vulnerability scanning | 15 | LOW (8) |
-| `workflows/iso25010-scan.yaml` | ISO/IEC 25010 quality assessment | 14 | LOW (20) |
+| `argus/workflows/repo-scan.yaml` | Security vulnerability scanning | 15 | LOW (8) |
+| `argus/workflows/iso25010-scan.yaml` | ISO/IEC 25010 quality assessment | 14 | LOW (20) |
 
 Both workflows validate at **LOW risk** under Armature's static risk scoring system.
 
@@ -164,13 +164,17 @@ Both workflows validate at **LOW risk** under Armature's static risk scoring sys
 ## Installation
 
 ```bash
-# 1. Install Armature (required dependency)
-git clone https://github.com/bryansparks/armature
-pip install -e armature/
+# Install from PyPI (pulls in armature-agents automatically)
+pip install armature-argus
+```
 
-# 2. Install Argus
+The `argus` command is available once installed.
+
+### From source (for development)
+
+```bash
 git clone https://github.com/bryansparks/argus
-pip install -e argus/
+pip install -e "argus/[dev]"
 ```
 
 ### External Tools
@@ -211,7 +215,7 @@ OPENAI_API_KEY=sk-...
 Edit `model_tiers` in the workflow spec to change providers or models:
 
 ```yaml
-# workflows/repo-scan.yaml
+# argus/workflows/repo-scan.yaml
 model_tiers:
   small:
     provider: anthropic
@@ -329,12 +333,12 @@ argus/
 │   ├── cli.py                  # CLI entry point (Click)
 │   ├── behaviors.py            # Behavior registry for trace-triggered alerts
 │   ├── report_html.py          # Markdown → HTML renderer
-│   └── tools/
-│       ├── scanners.py         # run_all_scanners tool (7 concurrent scanners)
-│       └── files.py            # list_source_files, read_file, aggregate_findings
-├── workflows/
-│   ├── repo-scan.yaml          # Security scanning workflow (15 stages)
-│   └── iso25010-scan.yaml      # ISO 25010 quality assessment (14 stages)
+│   ├── tools/
+│   │   ├── scanners.py         # run_all_scanners tool (7 concurrent scanners)
+│   │   └── files.py            # list_source_files, read_file, aggregate_findings
+│   └── workflows/
+│       ├── repo-scan.yaml      # Security scanning workflow (15 stages)
+│       └── iso25010-scan.yaml  # ISO 25010 quality assessment (14 stages)
 ├── tests/
 │   ├── conftest.py             # Session-scoped scan fixture
 │   ├── test_e2e.py             # End-to-end pipeline tests
@@ -419,10 +423,10 @@ Argus workflows support Armature's self-improvement system. After accumulating s
 
 ```bash
 # Analyze and propose improvements
-armature improve workflows/repo-scan.yaml
+armature improve argus/workflows/repo-scan.yaml
 
 # Run with automatic improvement when quality drops
-armature run workflows/repo-scan.yaml --input repo_url=... --auto-improve
+armature run argus/workflows/repo-scan.yaml --input repo_url=... --auto-improve
 ```
 
 The improvement system:

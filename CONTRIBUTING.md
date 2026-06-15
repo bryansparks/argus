@@ -96,7 +96,7 @@ argus/
     └── files.py        # File operations (list, read, aggregate)
 ```
 
-Workflow specs in `workflows/` define the scan pipeline as YAML.
+Workflow specs in `argus/workflows/` define the scan pipeline as YAML.
 
 ## Areas for Contribution
 

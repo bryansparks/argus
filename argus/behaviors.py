@@ -77,5 +77,5 @@ def _print_critical_hqs_suggestion(traces: list) -> None:
     """Print suggestion to run improve when HQS is critically low."""
     current_hqs = traces[-1].hqs or 0
     print(f"\n⚠️  CRITICAL: Very low HQS detected ({current_hqs:.2f})")
-    print("   Strongly recommend running: armature improve workflows/repo-scan.yaml")
+    print("   Strongly recommend running: armature improve argus/workflows/repo-scan.yaml")
     print("   to analyze failure patterns and propose spec improvements.")

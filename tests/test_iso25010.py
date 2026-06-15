@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-WORKFLOWS_DIR = Path(__file__).parent.parent / "workflows"
+WORKFLOWS_DIR = Path(__file__).parent.parent / "argus" / "workflows"
 
 
 # ── run_iso_scanners tool ──────────────────────────────────────────────────────

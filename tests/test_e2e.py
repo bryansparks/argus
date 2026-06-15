@@ -2,7 +2,7 @@ from __future__ import annotations
 import pytest
 from pathlib import Path
 
-WORKFLOW = Path(__file__).parent.parent / "workflows" / "repo-scan.yaml"
+WORKFLOW = Path(__file__).parent.parent / "argus" / "workflows" / "repo-scan.yaml"
 FIXTURE = Path(__file__).parent / "fixtures" / "vulnerable-app"
 
 
