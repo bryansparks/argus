@@ -13,7 +13,7 @@ import click
 import yaml
 from armature.runtime.engine import Harness
 from armature.spec.loader import load_spec
-from argus.behaviors import create_default_registry
+from argus.behaviors import create_argus_behaviors
 from argus.report_html import write_html_report
 
 _WORKFLOWS: dict[str, Path] = {
@@ -210,12 +210,13 @@ async def _run_scan(
     wf = workflow_path or WORKFLOW
     click.echo(f"[argus] Loading workflow: {wf}")
     spec = load_spec(wf)
-    behavior_registry = create_default_registry()
     harness = Harness(
         spec=spec,
         on_event=_on_event_verbose if verbose else None,
-        behavior_registry=behavior_registry,
     )
+    # Register Argus-specific behaviors (failure alerts, HQS degradation, etc.)
+    for rule in create_argus_behaviors():
+        harness._behaviors.register(rule)
 
     click.echo(f"[argus] Scanning: {repo_url}")
     if git_token:

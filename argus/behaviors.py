@@ -1,59 +1,59 @@
 """Argus behavior registry for trace-triggered reactive logic.
 
-Provides built-in behavior rules that fire after a scan run completes,
-based on patterns in the recent trace history.
+Note: As of Armature 0.3.0+, behavior registries are created internally by Harness
+using make_default_behavior_registry(). Custom behaviors should be registered by:
 
-Usage:
-    from argus.behaviors import create_default_registry
-    registry = create_default_registry()
-    harness = Harness.from_spec("workflows/repo-scan.yaml", behavior_registry=registry)
+1. Accessing harness._behaviors after construction, or
+2. Extending make_default_behavior_registry() in your own code
 
-Note: HQS = Harness Quality Score (renamed from IHR in Armature 0.3.2)
+This module is kept for reference and future extension.
+
+HQS = Harness Quality Score (renamed from IHR in Armature 0.3.2)
 """
 from __future__ import annotations
 
 from armature.hooks.lifecycle import BehaviorRule, BehaviorRegistry
 
 
-def create_default_registry() -> BehaviorRegistry:
-    """Create a BehaviorRegistry with Argus default behaviors."""
-    registry = BehaviorRegistry()
+def create_argus_behaviors() -> list[BehaviorRule]:
+    """Return a list of Argus-specific behavior rules.
 
-    # Built-in hqs_feedback fires automatically when harness initializes
-    # This is registered by Armature core, so we don't duplicate it here.
+    These can be added to the harness after construction:
 
-    # Alert on failure spike: page when failure rate exceeds 30% over last 20 traces
-    registry.register(BehaviorRule(
-        name="argus_failure_spike_alert",
-        description="Alert when scanner failure rate exceeds 30% over last 20 traces",
-        pattern=lambda traces: (
-            len(traces) >= 20
-            and sum(1 for t in traces[-20:] if not t.success) / 20 > 0.30
+        harness = Harness(spec=spec)
+        for rule in create_argus_behaviors():
+            harness._behaviors.register(rule)
+    """
+    return [
+        # Alert on failure spike: page when failure rate exceeds 30% over last 20 traces
+        BehaviorRule(
+            name="argus_failure_spike_alert",
+            description="Alert when scanner failure rate exceeds 30% over last 20 traces",
+            pattern=lambda traces: (
+                len(traces) >= 20
+                and sum(1 for t in traces[-20:] if not t.success) / 20 > 0.30
+            ),
+            handler=_print_failure_alert,
         ),
-        handler=lambda traces: _print_failure_alert(traces),
-    ))
-
-    # Alert on quality degradation: HQS dropped by >0.15 compared to 10 runs ago
-    registry.register(BehaviorRule(
-        name="argus_quality_degradation_alert",
-        description="Alert when HQS drops significantly compared to recent history",
-        pattern=lambda traces: (
-            len(traces) >= 10
-            and len(traces) >= 2
-            and (traces[-1].hqs or 0) < (traces[-10].hqs or 0) - 0.15
+        # Alert on quality degradation: HQS dropped by >0.15 compared to 10 runs ago
+        BehaviorRule(
+            name="argus_quality_degradation_alert",
+            description="Alert when HQS drops significantly compared to recent history",
+            pattern=lambda traces: (
+                len(traces) >= 10
+                and len(traces) >= 2
+                and (traces[-1].hqs or 0) < (traces[-10].hqs or 0) - 0.15
+            ),
+            handler=_print_degradation_alert,
         ),
-        handler=lambda traces: _print_degradation_alert(traces),
-    ))
-
-    # Suggest improvement when HQS is critically low (<0.60)
-    registry.register(BehaviorRule(
-        name="argus_critical_hqs_suggest",
-        description="Suggest armature improve when HQS is critically low",
-        pattern=lambda traces: len(traces) >= 3 and (traces[-1].hqs or 0) < 0.60,
-        handler=lambda traces: _print_critical_hqs_suggestion(traces),
-    ))
-
-    return registry
+        # Suggest improvement when HQS is critically low (<0.60)
+        BehaviorRule(
+            name="argus_critical_hqs_suggest",
+            description="Suggest armature improve when HQS is critically low",
+            pattern=lambda traces: len(traces) >= 3 and (traces[-1].hqs or 0) < 0.60,
+            handler=_print_critical_hqs_suggestion,
+        ),
+    ]
 
 
 def _print_failure_alert(traces: list) -> None:
